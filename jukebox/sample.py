@@ -109,7 +109,7 @@ def _sample(zs, labels, sampling_kwargs, priors, sample_levels, hps):
     alignments = None
     for level in reversed(sample_levels):
         prior = priors[level]
-        prior.cuda()
+        prior.to('xla:1')
         empty_cache()
 
         # Set correct total_length, hop_length, labels and sampling_kwargs for level
@@ -136,7 +136,7 @@ def _sample(zs, labels, sampling_kwargs, priors, sample_levels, hps):
 # Generate ancestral samples given a list of artists and genres
 def ancestral_sample(labels, sampling_kwargs, priors, hps):
     sample_levels = list(range(len(priors)))
-    zs = [t.zeros(hps.n_samples,0,dtype=t.long, device='cuda') for _ in range(len(priors))]
+    zs = [t.zeros(hps.n_samples,0,dtype=t.long, device='xla:1') for _ in range(len(priors))]
     zs = _sample(zs, labels, sampling_kwargs, priors, sample_levels, hps)
     return zs
 
@@ -170,13 +170,13 @@ def load_prompts(audio_files, duration, hps):
         xs.extend(xs)
     xs = xs[:hps.n_samples]
     x = t.stack([t.from_numpy(x) for x in xs])
-    x = x.to('cuda', non_blocking=True)
+    x = x.to('xla:1', non_blocking=True)
     return x
 
 # Load codes from previous sampling run
 def load_codes(codes_file, duration, priors, hps):
     data = t.load(codes_file, map_location='cpu')
-    zs = [z.cuda() for z in data['zs']]
+    zs = [z.to('xla:1') for z in data['zs']]
     assert zs[-1].shape[0] == hps.n_samples, f"Expected bs = {hps.n_samples}, got {zs[-1].shape[0]}"
     del data
     if duration is not None:
@@ -237,7 +237,7 @@ def save_samples(model, device, hps, sample_hps):
         metas.extend(metas)
     metas = metas[:hps.n_samples]
 
-    labels = [prior.labeller.get_batch_labels(metas, 'cuda') for prior in priors]
+    labels = [prior.labeller.get_batch_labels(metas, 'xla:1') for prior in priors]
     for label in labels:
         assert label['y'].shape[0] == hps.n_samples
 
