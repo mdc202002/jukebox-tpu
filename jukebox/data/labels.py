@@ -99,7 +99,7 @@ class Labeller():
                 tokens, indices = get_relevant_lyric_tokens(full_tokens, self.n_tokens, total_length, offset, duration)
                 tokens_list.append(tokens)
                 indices_list.append(indices)
-            ys[:, -self.n_tokens:] = t.tensor(tokens_list, dtype=t.long, device='cuda')
+            ys[:, -self.n_tokens:] = t.tensor(tokens_list, dtype=t.long, device='xla:1')
             return indices_list
         else:
             return None
