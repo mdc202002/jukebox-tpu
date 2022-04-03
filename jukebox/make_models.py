@@ -12,6 +12,7 @@ from jukebox.utils.remote_utils import download
 from jukebox.utils.torch_utils import freeze_model
 from jukebox.utils.dist_utils import print_all
 from jukebox.vqvae.vqvae import calculate_strides
+import torch_xla.core.xla_model as xm
 import fire
 
 MODELS = {
@@ -91,6 +92,7 @@ def make_vqvae(hps, device='xla:1'):
                   multipliers=hps.hvqvae_multipliers, use_bottleneck=hps.use_bottleneck,
                   **block_kwargs)
 
+    vqvae = xm.send_cpu_data_to_device(vqvae, device)
     vqvae = vqvae.to(device)
     restore_model(hps, vqvae, hps.restore_vqvae)
     if hps.train and not hps.prior:
@@ -175,6 +177,8 @@ def make_prior(hps, vqvae, device='xla:1'):
         print_all("Converting to fp16 params")
         from jukebox.transformer.ops import _convert_conv_weights_to_fp16
         prior.apply(_convert_conv_weights_to_fp16)
+
+    prior = xm.send_cpu_data_to_device(prior, device)
     prior = prior.to(device)
     restore_model(hps, prior, hps.restore_prior)
     if hps.train:

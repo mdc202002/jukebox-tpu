@@ -11,6 +11,7 @@ from jukebox.align import get_alignment
 from jukebox.save_html import save_html
 from jukebox.utils.sample_utils import split_batch, get_starts
 from jukebox.utils.dist_utils import print_once
+import torch_xla.core.xla_model as xm
 import fire
 
 def get_logdir(hps, level):
@@ -109,6 +110,7 @@ def _sample(zs, labels, sampling_kwargs, priors, sample_levels, hps):
     alignments = None
     for level in reversed(sample_levels):
         prior = priors[level]
+        prior = xm.send_cpu_data_to_device(prior, 'xla:1')
         prior.to('xla:1')
         empty_cache()
 
