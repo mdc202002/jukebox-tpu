@@ -16,8 +16,8 @@ dim = 784
 
 
 def load_mnist(images, labels, num):
-    data = np.zeros(num * dim, dtype=np.uint8).reshape((num, dim))
-    target = np.zeros(num, dtype=np.uint8).reshape((num, ))
+    data = np.zeros(num * dim, dtype=np.uint8).reshape((num, dim)).contiguous()
+    target = np.zeros(num, dtype=np.uint8).reshape((num, )).contiguous()
 
     with gzip.open(images, 'rb') as f_images,\
             gzip.open(labels, 'rb') as f_labels:

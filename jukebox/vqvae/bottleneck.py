@@ -57,7 +57,7 @@ class BottleneckBlock(nn.Module):
         with t.no_grad():
             # Calculate new centres
             x_l_onehot = t.zeros(k_bins, x.shape[0], device=x.device)  # k_bins, N * L
-            x_l_onehot.scatter_(0, x_l.view(1, x.shape[0]), 1)
+            x_l_onehot.scatter_(0, x_l.reshape(1, x.shape[0]).contiguous(), 1)
 
             _k_sum = t.matmul(x_l_onehot, x)  # k_bins, w
             _k_elem = x_l_onehot.sum(dim=-1)  # k_bins
@@ -72,8 +72,8 @@ class BottleneckBlock(nn.Module):
             old_k = self.k
             self.k_sum = mu * self.k_sum + (1. - mu) * _k_sum  # w, k_bins
             self.k_elem = mu * self.k_elem + (1. - mu) * _k_elem  # k_bins
-            usage = (self.k_elem.view(k_bins, 1) >= self.threshold).float()
-            self.k = usage * (self.k_sum.view(k_bins, emb_width) / self.k_elem.view(k_bins, 1)) \
+            usage = (self.k_elem.reshape(k_bins, 1).contiguous() >= self.threshold).float()
+            self.k = usage * (self.k_sum.reshape(k_bins, emb_width).contiguous() / self.k_elem.reshape(k_bins, 1).contiguous()) \
                      + (1 - usage) * _k_rand
             _k_prob = _k_elem / t.sum(_k_elem)  # x_l_onehot.mean(dim=-1)  # prob of each bin
             entropy = -t.sum(_k_prob * t.log(_k_prob + 1e-8))  # entropy ie how diverse
@@ -88,7 +88,7 @@ class BottleneckBlock(nn.Module):
     def preprocess(self, x):
         # NCT -> NTC -> [NT, C]
         x = x.permute(0, 2, 1).contiguous()
-        x = x.view(-1, x.shape[-1])  # x_en = (N * L, w), k_j = (w, k_bins)
+        x = x.reshape(-1, x.shape[-1]).contiguous()  # x_en = (N * L, w), k_j = (w, k_bins)
 
         if x.shape[-1] == self.emb_width:
             prenorm = t.norm(x - t.mean(x)) / np.sqrt(np.prod(x.shape))
@@ -105,8 +105,8 @@ class BottleneckBlock(nn.Module):
     def postprocess(self, x_l, x_d, x_shape):
         # [NT, C] -> NTC -> NCT
         N, T = x_shape
-        x_d = x_d.view(N, T, -1).permute(0, 2, 1).contiguous()
-        x_l = x_l.view(N, T)
+        x_d = x_d.reshape(N, T, -1).contiguous().permute(0, 2, 1).contiguous()
+        x_l = x_l.reshape(N, T).contiguous()
         return x_l, x_d
 
     def quantise(self, x):
@@ -132,7 +132,7 @@ class BottleneckBlock(nn.Module):
         x_l, fit = self.quantise(x)
 
         # Postprocess.
-        x_l = x_l.view(N, T)
+        x_l = x_l.reshape(N, T).contiguous()
         return x_l
 
     def decode(self, x_l):
@@ -143,7 +143,7 @@ class BottleneckBlock(nn.Module):
         x_d = self.dequantise(x_l)
 
         # Postprocess
-        x_d = x_d.view(N, T, width).permute(0, 2, 1).contiguous()
+        x_d = x_d.reshape(N, T, width).contiguous().permute(0, 2, 1).contiguous()
         return x_d
 
     def forward(self, x, update_k=True):

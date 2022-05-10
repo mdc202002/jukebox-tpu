@@ -23,7 +23,7 @@ def figure_to_image(figures, close=True):
         canvas.draw()
         data = np.frombuffer(canvas.buffer_rgba(), dtype=np.uint8)
         w, h = figure.canvas.get_width_height()
-        image_hwc = data.reshape([h, w, 4])[:, :, 0:3]
+        image_hwc = data.reshape([h, w, 4]).contiguous()[:, :, 0:3]
         image_chw = np.moveaxis(image_hwc, source=2, destination=0)
         if close:
             plt.close(figure)
@@ -60,9 +60,9 @@ def _prepare_video(V):
     n_rows = 2**((b.bit_length() - 1) // 2)
     n_cols = V.shape[0] // n_rows
 
-    V = np.reshape(V, newshape=(n_rows, n_cols, t, c, h, w))
+    V = np.reshape(V, newshape=(n_rows, n_cols, t, c, h, w)).contiguous()
     V = np.transpose(V, axes=(2, 0, 4, 1, 5, 3))
-    V = np.reshape(V, newshape=(t, n_rows * h, n_cols * w, c))
+    V = np.reshape(V, newshape=(t, n_rows * h, n_cols * w, c)).contiguous()
 
     return V
 

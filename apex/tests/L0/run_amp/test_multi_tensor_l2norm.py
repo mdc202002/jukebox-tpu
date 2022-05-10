@@ -43,8 +43,8 @@ class TestMultiTensorL2Norm(unittest.TestCase):
 
         if per_tensor:
             norm, norm_per_tensor = applier(multi_tensor_l2norm, self.overflow_buf, [in_list], True)
-            normab = torch.cat((a.norm().view(1), b.norm().view(1)))
-            norm_per_tensor = norm_per_tensor.view(-1, 2)
+            normab = torch.cat((a.norm().reshape(1).contiguous(), b.norm().reshape(1).contiguous()))
+            norm_per_tensor = norm_per_tensor.reshape(-1, 2).contiguous()
         else:
             norm, _ = applier(multi_tensor_l2norm, self.overflow_buf, [in_list], True)
 

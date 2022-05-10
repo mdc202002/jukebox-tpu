@@ -10,7 +10,7 @@ from jukebox.utils.checkpoint import checkpoint
 def repeat(x, n, dim):
     if dim == -1:
         dim = len(x.shape) - 1
-    return x.view(int(np.prod(x.shape[:dim+1])), 1, int(np.prod(x.shape[dim+1:]))).repeat(1,n,1).view(*x.shape[:dim], n * x.shape[dim], *x.shape[dim+1:])
+    return x.reshape(int(np.prod(x.shape[:dim+1])), 1, int(np.prod(x.shape[dim+1:]))).contiguous().repeat(1,n,1).reshape(*x.shape[:dim], n * x.shape[dim], *x.shape[dim+1:]).contiguous()
 
 def get_mask(mask, q_l, kv_l, blocks, spread, device, sample, sample_t):
     # returns a mask of shape 1 x 1 x q_l x kv_l or None if masking is not needed.
@@ -22,10 +22,10 @@ def get_mask(mask, q_l, kv_l, blocks, spread, device, sample, sample_t):
         mask = t.ones(q_l, kv_l, device=device).tril(offset)
     elif mask == 'summary':
         # Masked summary
-        mask = t.nn.functional.pad(t.ones(q_l, q_l, device=device).tril().view(q_l, blocks, q_l // blocks)[:,:-1,-kv_l//blocks:],(0,0,1,0),value=1).contiguous().view(q_l, kv_l)
+        mask = t.nn.functional.pad(t.ones(q_l, q_l, device=device).tril().reshape(q_l, blocks, q_l // blocks).contiguous()[:,:-1,-kv_l//blocks:],(0,0,1,0),value=1).contiguous().reshape(q_l, kv_l).contiguous()
     elif mask == 'prime':
         mask = t.ones(q_l, kv_l, device=device).tril(offset)
-    return mask.view(1,1,q_l,kv_l)
+    return mask.reshape(1,1,q_l,kv_l).contiguous()
 
 class FactoredAttention(nn.Module):
     def __init__(self, n_in, n_ctx, n_state, n_head,
@@ -110,11 +110,11 @@ class FactoredAttention(nn.Module):
     def merge_heads(self, x):
         x = x.permute(0, 2, 1, 3).contiguous()
         new_x_shape = (*x.size()[:-2], x.size(-2) * x.size(-1))
-        return x.view(*new_x_shape)  # in Tensorflow implem: fct merge_states
+        return x.reshape(*new_x_shape).contiguous()  # in Tensorflow implem: fct merge_states
 
     def split_heads(self, x, k=False):
         new_x_shape = (*x.size()[:-1], self.n_head, x.size(-1) // self.n_head)
-        x = x.view(*new_x_shape)  # in Tensorflow implem: fct split_states
+        x = x.reshape(*new_x_shape).contiguous()  # in Tensorflow implem: fct split_states
         if k:
             return x.permute(0, 2, 3, 1)
         else:
@@ -137,17 +137,17 @@ class FactoredAttention(nn.Module):
         bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
         if sample:
             assert l == self._suff_cache_len(), f"{l} != {self._suff_cache_len()}"
-            return self.dense_attn(q, k, v, sample).view(bs, 1, d)
+            return self.dense_attn(q, k, v, sample).reshape(bs, 1, d).contiguous()
         else:
             ql = q.shape[1]
-            q = q.view(bs * ql // block_ctx, block_ctx, d)
+            q = q.reshape(bs * ql // block_ctx, block_ctx, d).contiguous()
             if ql < l:
                 l = ql
                 k = k[:, -l:].contiguous()
                 v = v[:, -l:].contiguous()
-            k = k.view(bs * l // block_ctx, block_ctx, d)
-            v = v.view(bs * l // block_ctx, block_ctx, d)
-            return self.dense_attn(q, k, v, sample).view(bs, l, d)
+            k = k.reshape(bs * l // block_ctx, block_ctx, d).contiguous()
+            v = v.reshape(bs * l // block_ctx, block_ctx, d).contiguous()
+            return self.dense_attn(q, k, v, sample).reshape(bs, l, d).contiguous()
 
     def transpose_block_attn(self, q, k, v, sample):
         blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
@@ -156,13 +156,13 @@ class FactoredAttention(nn.Module):
             block_l = (l - 1) % block_ctx
             k = k[:,block_l::block_ctx,:]
             v = v[:,block_l::block_ctx,:]
-            return self.dense_attn(q, k, v, sample).view(bs, 1, d)
+            return self.dense_attn(q, k, v, sample).reshape(bs, 1, d).contiguous()
         else:
             ql = q.shape[1]
-            q = q.view(bs, ql // block_ctx, block_ctx, d).transpose(1,2).contiguous().view(bs * block_ctx, ql // block_ctx, d)
-            k = k.view(bs,  l // block_ctx, block_ctx, d).transpose(1,2).contiguous().view(bs * block_ctx,  l // block_ctx, d)
-            v = v.view(bs,  l // block_ctx, block_ctx, d).transpose(1,2).contiguous().view(bs * block_ctx,  l // block_ctx, d)
-            return self.dense_attn(q, k, v, sample).view(bs, block_ctx, ql // block_ctx, d).transpose(1,2).contiguous().view(bs, ql, d)
+            q = q.reshape(bs, ql // block_ctx, block_ctx, d).contiguous().transpose(1,2).contiguous().reshape(bs * block_ctx, ql // block_ctx, d).contiguous()
+            k = k.reshape(bs,  l // block_ctx, block_ctx, d).contiguous().transpose(1,2).contiguous().reshape(bs * block_ctx,  l // block_ctx, d).contiguous()
+            v = v.reshape(bs,  l // block_ctx, block_ctx, d).contiguous().transpose(1,2).contiguous().reshape(bs * block_ctx,  l // block_ctx, d).contiguous()
+            return self.dense_attn(q, k, v, sample).reshape(bs, block_ctx, ql // block_ctx, d).contiguous().transpose(1,2).contiguous().reshape(bs, ql, d).contiguous()
 
     def prev_block_attn(self, q, k, v, sample):
         blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
@@ -178,19 +178,19 @@ class FactoredAttention(nn.Module):
             else:
                 k = t.zeros(bs, block_ctx, d, device=q.device, dtype=q.dtype)
                 v = t.zeros(bs, block_ctx, d, device=q.device, dtype=q.dtype)
-            return self.dense_attn(q, k, v, sample).view(bs, 1, d)
+            return self.dense_attn(q, k, v, sample).reshape(bs, 1, d).contiguous()
         else:
             ql = q.shape[1]
-            q = q.view(bs * ql // block_ctx, block_ctx, d)
-            k = t.nn.functional.pad(k.view(bs, l // block_ctx, block_ctx, d)[:, :-1, :, :], (0,0,0,0,1,0)).view(bs * l // block_ctx, block_ctx, d)
-            v = t.nn.functional.pad(v.view(bs, l // block_ctx, block_ctx, d)[:, :-1, :, :], (0,0,0,0,1,0)).view(bs * l // block_ctx, block_ctx, d)
+            q = q.reshape(bs * ql // block_ctx, block_ctx, d).contiguous()
+            k = t.nn.functional.pad(k.reshape(bs, l // block_ctx, block_ctx, d).contiguous()[:, :-1, :, :], (0,0,0,0,1,0)).reshape(bs * l // block_ctx, block_ctx, d).contiguous()
+            v = t.nn.functional.pad(v.reshape(bs, l // block_ctx, block_ctx, d).contiguous()[:, :-1, :, :], (0,0,0,0,1,0)).reshape(bs * l // block_ctx, block_ctx, d).contiguous()
             if ql < l:
                 qb = ql // block_ctx
                 kb =  l // block_ctx
                 l = ql
-                k = k.view(bs, kb, block_ctx, d)[:, -qb:].contiguous().view(bs * qb, block_ctx, d)
-                v = v.view(bs, kb, block_ctx, d)[:, -qb:].contiguous().view(bs * qb, block_ctx, d)
-            return self.dense_attn(q, k, v, sample).view(bs, l, d)
+                k = k.reshape(bs, kb, block_ctx, d).contiguous()[:, -qb:].contiguous().reshape(bs * qb, block_ctx, d).contiguous()
+                v = v.reshape(bs, kb, block_ctx, d).contiguous()[:, -qb:].contiguous().reshape(bs * qb, block_ctx, d).contiguous()
+            return self.dense_attn(q, k, v, sample).reshape(bs, l, d).contiguous()
 
     def summary_attn(self, q, k, v, sample):
         blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
@@ -198,24 +198,24 @@ class FactoredAttention(nn.Module):
         if sample:
             k = t.nn.functional.pad(k[:, block_ctx-1:blocks*block_ctx-1:block_ctx, :],(0,0,1,0))
             v = t.nn.functional.pad(v[:, block_ctx-1:blocks*block_ctx-1:block_ctx, :],(0,0,1,0))
-            return self.dense_attn(q, k, v, sample).view(bs, 1, d)
+            return self.dense_attn(q, k, v, sample).reshape(bs, 1, d).contiguous()
         else:
-            k = t.nn.functional.pad(k.view(bs, blocks, l // blocks, d)[:, :-1, -1, :],(0,0,1,0)) # bs, blocks, d
-            v = t.nn.functional.pad(v.view(bs, blocks, l // blocks, d)[:, :-1, -1, :],(0,0,1,0)) # bs, blocks, d
-            return self.dense_attn(q, k, v, sample).view(bs, l, d)
+            k = t.nn.functional.pad(k.reshape(bs, blocks, l // blocks, d).contiguous()[:, :-1, -1, :],(0,0,1,0)) # bs, blocks, d
+            v = t.nn.functional.pad(v.reshape(bs, blocks, l // blocks, d).contiguous()[:, :-1, -1, :],(0,0,1,0)) # bs, blocks, d
+            return self.dense_attn(q, k, v, sample).reshape(bs, l, d).contiguous()
 
     def summary_spread_attn(self, q, k, v, sample):
         blocks, block_ctx, spread = self.blocks, self.block_ctx, self.spread # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
         bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
         if sample:
             assert False, "Not yet implemented"
-            # k = t.nn.functional.pad(k,(0,0,block_ctx,(-l)%block_ctx)).view(bs, -1, block_ctx, d)[:,:-1,-spread:,:].contiguous().view(bs, -1, d)
-            # v = t.nn.functional.pad(v,(0,0,block_ctx,(-l)%block_ctx)).view(bs, -1, block_ctx, d)[:,:-1,-spread:,:].contiguous().view(bs, -1, d)
-            # return self.dense_attn(q, k, v, sample).view(bs, 1, d)
+            # k = t.nn.functional.pad(k,(0,0,block_ctx,(-l)%block_ctx)).reshape(bs, -1, block_ctx, d).contiguous()[:,:-1,-spread:,:].contiguous().reshape(bs, -1, d).contiguous()
+            # v = t.nn.functional.pad(v,(0,0,block_ctx,(-l)%block_ctx)).reshape(bs, -1, block_ctx, d).contiguous()[:,:-1,-spread:,:].contiguous().reshape(bs, -1, d).contiguous()
+            # return self.dense_attn(q, k, v, sample).reshape(bs, 1, d).contiguous()
         else:
-            k = t.nn.functional.pad(k.view(bs, blocks, l // blocks, d)[:, :-1, -spread:, :],(0,0,0,0,1,0)).contiguous().view(bs, blocks * spread, d)  # bs, blocks * spread, d
-            v = t.nn.functional.pad(v.view(bs, blocks, l // blocks, d)[:, :-1, -spread:, :],(0,0,0,0,1,0)).contiguous().view(bs, blocks * spread, d)  # bs, blocks * spread, d
-            return self.dense_attn(q, k, v, sample).view(bs, l, d)
+            k = t.nn.functional.pad(k.reshape(bs, blocks, l // blocks, d).contiguous()[:, :-1, -spread:, :],(0,0,0,0,1,0)).contiguous().reshape(bs, blocks * spread, d).contiguous()  # bs, blocks * spread, d
+            v = t.nn.functional.pad(v.reshape(bs, blocks, l // blocks, d).contiguous()[:, :-1, -spread:, :],(0,0,0,0,1,0)).contiguous().reshape(bs, blocks * spread, d).contiguous()  # bs, blocks * spread, d
+            return self.dense_attn(q, k, v, sample).reshape(bs, l, d).contiguous()
 
     def prime_attn(self, q, k, v, sample):
         prime_len = self._prime_len
@@ -395,7 +395,7 @@ class FactoredAttention(nn.Module):
         assert (grad[:2] == 0).all()
         assert (grad[3:] == 0).all()
         assert (grad[2, (pos + 1):] == 0).all()
-        pos_grad = (t.sum(grad[2] ** 2, dim=-1) > 0).nonzero().view(-1).cpu()
+        pos_grad = (t.sum(grad[2] ** 2, dim=-1) > 0).nonzero().reshape(-1).contiguous().cpu()
 
         block_pos = pos - (pos % (l // blocks))
         exp_pos_grad = {0: t.arange(pos),
@@ -403,7 +403,7 @@ class FactoredAttention(nn.Module):
                         2: t.arange(pos % (l // blocks), pos, l // blocks),
                         3: t.arange(block_pos - l // blocks, block_pos),
                         4: t.arange(l // blocks - 1, pos, l // blocks),
-                        5: ((t.arange(pos) % (l // blocks) >= (l // blocks - spread)) & (t.arange(pos) < block_pos)).nonzero().view(-1)}[self.attn_func]
+                        5: ((t.arange(pos) % (l // blocks) >= (l // blocks - spread)) & (t.arange(pos) < block_pos)).nonzero().reshape(-1).contiguous()}[self.attn_func]
         exp_pos_grad = t.cat([exp_pos_grad, t.tensor([pos])], dim=-1)
 
         assert (len(pos_grad) == len(exp_pos_grad)) and (pos_grad == exp_pos_grad).all(), \

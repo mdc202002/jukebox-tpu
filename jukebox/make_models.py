@@ -212,7 +212,7 @@ def save_outputs(model, device, hps):
 
     rng = t.random.manual_seed(0)
     x = 2 * t.rand((1, n_ctx * 8 * 4 * 4, 1), generator=rng, dtype=t.float).to('xla:1') - 1.0  # -1 to 1
-    lyric_tokens = t.randint(0, prime_bins, (1, n_tokens), generator=rng, dtype=t.long).view(-1).numpy()
+    lyric_tokens = t.randint(0, prime_bins, (1, n_tokens), generator=rng, dtype=t.long).reshape(-1).contiguous().numpy()
     artist_id = 10
     genre_ids = [1]
     total_length = 2 * 2646000
@@ -235,7 +235,7 @@ def save_outputs(model, device, hps):
         prior = priors[level]
         prior.to('xla:1')
         x_in = x[:, :n_ctx * 8 * (4 ** level)]
-        y_in = t.from_numpy(prior.labeller.get_y_from_ids(artist_id, genre_ids, lyric_tokens, total_length, offset)).view(1, -1).to('xla:1').long()
+        y_in = t.from_numpy(prior.labeller.get_y_from_ids(artist_id, genre_ids, lyric_tokens, total_length, offset)).reshape(1, -1).contiguous().to('xla:1').long()
         x_out, _, metrics = prior(x_in, y_in, fp16=hps.fp16, get_preds=True, decode=True)
         preds = metrics['preds']
         data[level] = dict(x=x_in, y=y_in, x_out=x_out, preds=preds)

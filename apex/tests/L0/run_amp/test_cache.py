@@ -24,7 +24,7 @@ def get_reference_grad(i, w, ops):
 class WhitelistModule(torch.nn.Module):
     def __init__(self, dtype):
         super(WhitelistModule, self).__init__()
-        self.weight = torch.nn.Parameter(torch.arange(8*8, device='cuda', dtype=dtype).view(8,8))
+        self.weight = torch.nn.Parameter(torch.arange(8*8, device='cuda', dtype=dtype).reshape(8,8).contiguous())
 
     @staticmethod
     def ops(input, weight):
@@ -37,7 +37,7 @@ class WhitelistModule(torch.nn.Module):
 class BlacklistModule(torch.nn.Module):
     def __init__(self, dtype):
         super(BlacklistModule, self).__init__()
-        self.weight = torch.nn.Parameter(torch.arange(2*8, device='cuda', dtype=dtype).view(2,8))
+        self.weight = torch.nn.Parameter(torch.arange(2*8, device='cuda', dtype=dtype).reshape(2,8).contiguous())
 
     @staticmethod
     def ops(input, weight):
@@ -50,7 +50,7 @@ class BlacklistModule(torch.nn.Module):
 class PromoteModule(torch.nn.Module):
     def __init__(self, dtype):
         super(PromoteModule, self).__init__()
-        self.weight = torch.nn.Parameter(torch.arange(2*8, device='cuda', dtype=dtype).view(2,8))
+        self.weight = torch.nn.Parameter(torch.arange(2*8, device='cuda', dtype=dtype).reshape(2,8).contiguous())
 
     @staticmethod
     def ops(input, weight):

@@ -91,8 +91,8 @@ class SyncBatchNorm(_BatchNorm):
             self.num_batches_tracked += 1
             with torch.no_grad():
                 channel_first_input = input.transpose(0, 1).contiguous()
-                squashed_input_tensor_view = channel_first_input.view(
-                    channel_first_input.size(0), -1)
+                squashed_input_tensor_view = channel_first_input.reshape(
+                    channel_first_input.size(0), -1).contiguous()
                 # total number of data points for each variance entry. Used to calculate unbiased variance estimate
                 m = None
                 local_m = float(squashed_input_tensor_view.size()[1])

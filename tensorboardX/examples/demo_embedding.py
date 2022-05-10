@@ -25,7 +25,7 @@ class M(nn.Module):
         i = self.cn2(i)
         i = F.relu(i)
         i = F.max_pool2d(i, 2)
-        i = i.view(len(i), -1)
+        i = i.reshape(len(i), -1).contiguous()
         i = self.fc1(i)
         i = F.log_softmax(i, dim=1)
         return i

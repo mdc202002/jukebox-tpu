@@ -96,15 +96,15 @@ class Conv1D(nn.Module):
 
     def forward(self, x):
         size_out = (*x.size()[:-1], self.n_out)
-        x = t.addmm(self.b.type_as(x), x.view(-1, x.size(-1)), self.w.type_as(x)) # If x if float then float else half
-        x = x.view(*size_out)
+        x = t.addmm(self.b.type_as(x), x.reshape(-1, x.size(-1)).contiguous(), self.w.type_as(x)) # If x if float then float else half
+        x = x.reshape(*size_out).contiguous()
         return x
 
 # For large contexts, mask's can take up memory, so you can make a single saved mask for all layers
 class Mask(nn.Module):
     def __init__(self, n_ctx):
         super().__init__()
-        self.register_buffer('b', t.tril(t.ones(n_ctx, n_ctx)).view(1, 1, n_ctx, n_ctx))
+        self.register_buffer('b', t.tril(t.ones(n_ctx, n_ctx)).reshape(1, 1, n_ctx, n_ctx).contiguous())
 
     def forward(self, w):
         w = w * self.b + -1e9 * (1 - self.b)  # For fp16 do w = w.float().masked_fill(self.b, float('-inf')

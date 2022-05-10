@@ -24,7 +24,7 @@ def _loss_fn(loss_fn, x_target, x_pred, hps):
     elif loss_fn == 'l2':
         return t.mean((x_pred - x_target) ** 2) / hps.bandwidth['l2']
     elif loss_fn == 'linf':
-        residual = ((x_pred - x_target) ** 2).reshape(x_target.shape[0], -1)
+        residual = ((x_pred - x_target) ** 2).reshape(x_target.shape[0], -1).contiguous()
         values, _ = t.topk(residual, hps.linf_k, dim=1)
         return t.mean(values) / hps.bandwidth['l2']
     elif loss_fn == 'lmix':

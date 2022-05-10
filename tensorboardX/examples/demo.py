@@ -62,13 +62,13 @@ writer.export_scalars_to_json("./all_scalars.json")
 dataset = datasets.MNIST('mnist', train=False, download=True)
 images = dataset.test_data[:100].float()
 label = dataset.test_labels[:100]
-features = images.view(100, 784)
+features = images.reshape(100, 784).contiguous()
 writer.add_embedding(features, metadata=label, label_img=images.unsqueeze(1))
 writer.add_embedding(features, global_step=1, tag='noMetadata')
 dataset = datasets.MNIST('mnist', train=True, download=True)
 images_train = dataset.train_data[:100].float()
 labels_train = dataset.train_labels[:100]
-features_train = images_train.view(100, 784)
+features_train = images_train.reshape(100, 784).contiguous()
 
 all_features = torch.cat((features, features_train))
 all_labels = torch.cat((label, labels_train))
@@ -81,7 +81,7 @@ writer.add_embedding(all_features, metadata=all_labels, label_img=all_images.uns
 
 # VIDEO
 vid_images = dataset.train_data[:16 * 48]
-vid = vid_images.view(16, 48, 1, 28, 28)  # BxTxCxHxW
+vid = vid_images.reshape(16, 48, 1, 28, 28).contiguous()  # BxTxCxHxW
 
 writer.add_video('video', vid_tensor=vid)
 writer.add_video('video_1_fps', vid_tensor=vid, fps=1)

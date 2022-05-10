@@ -45,7 +45,7 @@ class Generator(chainer.Chain):
 
     def __call__(self, z):
         h = F.reshape(F.relu(self.bn0(self.l0(z))),
-                      (len(z), self.ch, self.bottom_width, self.bottom_width))
+                      (len(z), self.ch, self.bottom_width, self.bottom_width)).contiguous()
         h = F.relu(self.bn1(self.dc1(h)))
         h = F.relu(self.bn2(self.dc2(h)))
         h = F.relu(self.bn3(self.dc3(h)))

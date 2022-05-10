@@ -5,7 +5,7 @@ from tensorboardX import SummaryWriter
 
 def main():
     degrees = np.linspace(0, 3600 * math.pi / 180.0, 3600)
-    degrees = degrees.reshape(3600, 1)
+    degrees = degrees.reshape(3600, 1).contiguous()
     labels = ["%d" % (i) for i in range(0, 3600)]
 
     with SummaryWriter() as writer:
