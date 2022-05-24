@@ -58,7 +58,7 @@ class Labeller():
         assert len(genre_ids) <= self.max_genre_words
         genre_ids = genre_ids + [-1] * (self.max_genre_words - len(genre_ids))
         y = np.array([total_length, offset, self.sample_length, artist_id, *genre_ids, *tokens], dtype=np.int64)
-        assert y.shape == self.label_shape, f"Expected {self.label_shape}, got {y.shape}"
+        assert tuple(y.shape) == self.label_shape, f"Expected {self.label_shape}, got {y.shape}"
         info = dict(artist=artist, genre=genre, lyrics=lyrics, full_tokens=full_tokens)
         return dict(y=y, info=info)
 
@@ -70,7 +70,7 @@ class Labeller():
         else:
             lyric_tokens = []
         y = np.array([total_length, offset, self.sample_length, artist_id, *genre_ids, *lyric_tokens], dtype=np.int64)
-        assert y.shape == self.label_shape, f"Expected {self.label_shape}, got {y.shape}"
+        assert tuple(y.shape) == self.label_shape, f"Expected {self.label_shape}, got {y.shape}"
         return y
 
     def get_batch_labels(self, metas, device='cpu'):
@@ -105,7 +105,7 @@ class Labeller():
             return None
 
     def describe_label(self, y):
-        assert y.shape == self.label_shape, f"Expected {self.label_shape}, got {y.shape}"
+        assert tuple(y.shape) == self.label_shape, f"Expected {self.label_shape}, got {y.shape}"
         y = np.array(y).tolist()
         total_length, offset, length, artist_id, *genre_ids = y[:4 + self.max_genre_words]
         tokens = y[4 + self.max_genre_words:]
