@@ -234,7 +234,7 @@ class FactoredAttention(nn.Module):
         query, key, value = x.chunk(3, dim=2)
         if sample:
             self.sample_t += curr_ctx
-            print('factored_qkv', self.sample_t, curr_ctx, self.__hash__())
+            #print('factored_qkv', self.sample_t, curr_ctx, self.__hash__())
             key, value = self._append_cache(key, value)
             l_cache = self._suff_cache_len()
             if self._cache_len() > l_cache:
@@ -266,7 +266,7 @@ class FactoredAttention(nn.Module):
                 self._slice_cache(0, self._prime_len)
             key, value = self.cache['key'], self.cache['value']
             self.sample_t += curr_ctx
-            print('prime_qkv', self.sample_t, curr_ctx, self.__hash__())
+            #print('prime_qkv', self.sample_t, curr_ctx, self.__hash__())
             assert key.shape[1] == value.shape[1] == self._suff_cache_len(), f'k: {key.shape}, v: {value.shape}, prime_dims: {self._suff_cache_len()}'
         else:
             assert key.shape[1] == value.shape[1] == self.n_ctx, f'k: {key.shape}, v: {value.shape}, prime_dims: {self.n_ctx}'
@@ -284,7 +284,7 @@ class FactoredAttention(nn.Module):
                 self.cache['key'], self.cache['value'] = self.c_enc_kv(encoder_kv.type_as(x)).chunk(2, dim=2)
             key, value = self.cache['key'], self.cache['value']
             self.sample_t += curr_ctx
-            print('decode_qkv', self.sample_t, curr_ctx, self.__hash__())
+            #print('decode_qkv', self.sample_t, curr_ctx, self.__hash__())
         else:
             key, value = self.c_enc_kv(encoder_kv.type_as(x)).chunk(2, dim=2)
         assert key.shape[0] == value.shape[0] == query.shape[0], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
@@ -295,7 +295,7 @@ class FactoredAttention(nn.Module):
     def forward(self, x, encoder_kv=None, sample=False):
         curr_ctx = x.shape[1]
         x = self.c_attn(x)
-        print(self.__hash__(), x.shape, encoder_kv, sample)
+        print(self.__hash__(), self.sample_t, x.shape, encoder_kv, sample)
         query, key, value, sample = self.qkv(x, encoder_kv=encoder_kv, sample=sample)
         if self.checkpoint_attn == 2 and not sample:
             a = checkpoint(lambda q,k,v,s=sample: self.attn(q,k,v,s), (query, key, value), (), True)
