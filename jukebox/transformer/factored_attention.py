@@ -229,6 +229,7 @@ class FactoredAttention(nn.Module):
 
     def factored_qkv(self, x, encoder_kv=None, sample=False):
         curr_ctx = x.shape[1]
+        print(curr_ctx)
         assert encoder_kv is None
         query, key, value = x.chunk(3, dim=2)
         if sample:
@@ -254,6 +255,7 @@ class FactoredAttention(nn.Module):
 
     def prime_qkv(self, x, encoder_kv=None, sample=False):
         curr_ctx = x.shape[1]
+        print(curr_ctx)
         assert encoder_kv is None
         query, key, value = x.chunk(3, dim=2)
         if sample:
@@ -272,6 +274,7 @@ class FactoredAttention(nn.Module):
 
     def decode_qkv(self, x, encoder_kv=None, sample=False):
         curr_ctx = x.shape[1]
+        print(curr_ctx)
         assert encoder_kv is not None
         query = x
         if sample:
