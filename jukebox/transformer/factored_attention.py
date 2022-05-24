@@ -7,6 +7,73 @@ import torch.nn.functional as F
 from jukebox.transformer.ops import Conv1D
 from jukebox.utils.checkpoint import checkpoint
 
+
+def factored_qkv(self, x, encoder_kv=None, sample=False):
+    curr_ctx = x.shape[1]
+    #print(curr_ctx)
+    assert encoder_kv is None
+    query, key, value = x.chunk(3, dim=2)
+    if sample:
+        self.sample_t += curr_ctx
+        #print('factored_qkv', self.sample_t, curr_ctx, self.__hash__())
+        key, value = self._append_cache(key, value)
+        l_cache = self._suff_cache_len()
+        if self._cache_len() > l_cache:
+            self._slice_cache(-l_cache)
+        if curr_ctx > 1:
+            if self.attn_func != 0:
+                query = self._pad_to_block_ctx(query, query=True)
+                key = self._pad_to_block_ctx(key)
+                value = self._pad_to_block_ctx(value)
+                assert key.shape[1] % self.block_ctx == 0
+                assert query.shape[1] % self.block_ctx == 0
+            assert key.shape[1] == value.shape[1]
+            assert query.shape[1] <= key.shape[1]
+            sample = False
+        else:
+            key = self.cache['key']
+            value = self.cache['value']
+    return query, key, value, sample
+
+def prime_qkv(self, x, encoder_kv=None, sample=False):
+    curr_ctx = x.shape[1]
+    #print(curr_ctx)
+    assert encoder_kv is None
+    query, key, value = x.chunk(3, dim=2)
+    if sample:
+        if self._cache_len() < self._prime_len:
+            self._append_cache(key, value)
+        if self._cache_len() > self._prime_len:
+            self._slice_cache(0, self._prime_len)
+        key, value = self.cache['key'], self.cache['value']
+        self.sample_t += curr_ctx
+        #print('prime_qkv', self.sample_t, curr_ctx, self.__hash__())
+        assert key.shape[1] == value.shape[1] == self._suff_cache_len(), f'k: {key.shape}, v: {value.shape}, prime_dims: {self._suff_cache_len()}'
+    else:
+        assert key.shape[1] == value.shape[1] == self.n_ctx, f'k: {key.shape}, v: {value.shape}, prime_dims: {self.n_ctx}'
+    assert key.shape[0] == value.shape[0] == query.shape[0], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
+    assert key.shape[2] == value.shape[2] == query.shape[2], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
+    return query, key, value, sample
+
+def decode_qkv(self, x, encoder_kv=None, sample=False):
+    curr_ctx = x.shape[1]
+    #print(curr_ctx)
+    assert encoder_kv is not None
+    query = x
+    if sample:
+        if self.sample_t == 0:
+            self.cache['key'], self.cache['value'] = self.c_enc_kv(encoder_kv.type_as(x)).chunk(2, dim=2)
+        key, value = self.cache['key'], self.cache['value']
+        self.sample_t += curr_ctx
+        #print('decode_qkv', self.sample_t, curr_ctx, self.__hash__())
+    else:
+        key, value = self.c_enc_kv(encoder_kv.type_as(x)).chunk(2, dim=2)
+    assert key.shape[0] == value.shape[0] == query.shape[0], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
+    assert key.shape[1] == value.shape[1] == self.encoder_dims, f'k: {key.shape}, v: {value.shape}, enc_dims: {self.encoder_dims}'
+    assert key.shape[2] == value.shape[2] == query.shape[2], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
+    return query, key, value, sample
+
+
 def repeat(x, n, dim):
     if dim == -1:
         dim = len(x.shape) - 1
@@ -55,14 +122,14 @@ class FactoredAttention(nn.Module):
         # Sequence of length l is factored as [blocks, l // blocks]
         self.attn_func = attn_func
         self.qkv, self.attn, self.attn_mask = {
-            0: (self.factored_qkv, self.dense_attn, 'autoregressive'),              # Attend to all positions
-            1: (self.factored_qkv, self.block_attn, 'autoregressive'),              # Attend to your block
-            2: (self.factored_qkv, self.transpose_block_attn, 'autoregressive'),    # Attend to transpose block
-            3: (self.factored_qkv, self.prev_block_attn, None),                     # Attend to previous block
-            4: (self.factored_qkv, self.summary_attn, 'summary'),                   # Attend to last position of each block
-            5: (self.factored_qkv, self.summary_spread_attn, 'summary'),
-            6: (self.decode_qkv, self.decode_attn, None),
-            7: (self.prime_qkv, self.prime_attn, 'prime')
+            0: (factored_qkv, self.dense_attn, 'autoregressive'),              # Attend to all positions
+            1: (factored_qkv, self.block_attn, 'autoregressive'),              # Attend to your block
+            2: (factored_qkv, self.transpose_block_attn, 'autoregressive'),    # Attend to transpose block
+            3: (factored_qkv, self.prev_block_attn, None),                     # Attend to previous block
+            4: (factored_qkv, self.summary_attn, 'summary'),                   # Attend to last position of each block
+            5: (factored_qkv, self.summary_spread_attn, 'summary'),
+            6: (decode_qkv, self.decode_attn, None),
+            7: (prime_qkv, self.prime_attn, 'prime')
         }[attn_func] # Attend to last k position of each block
 
         self.blocks = blocks
@@ -227,76 +294,11 @@ class FactoredAttention(nn.Module):
         assert k.shape[1] == v.shape[1] == self.encoder_dims, f'k: {k.shape}, v: {v.shape}, enc_dims: {self.encoder_dims}'
         return self.dense_attn(q, k, v, sample)
 
-    def factored_qkv(self, x, encoder_kv=None, sample=False):
-        curr_ctx = x.shape[1]
-        #print(curr_ctx)
-        assert encoder_kv is None
-        query, key, value = x.chunk(3, dim=2)
-        if sample:
-            self.sample_t += curr_ctx
-            #print('factored_qkv', self.sample_t, curr_ctx, self.__hash__())
-            key, value = self._append_cache(key, value)
-            l_cache = self._suff_cache_len()
-            if self._cache_len() > l_cache:
-                self._slice_cache(-l_cache)
-            if curr_ctx > 1:
-                if self.attn_func != 0:
-                    query = self._pad_to_block_ctx(query, query=True)
-                    key = self._pad_to_block_ctx(key)
-                    value = self._pad_to_block_ctx(value)
-                    assert key.shape[1] % self.block_ctx == 0
-                    assert query.shape[1] % self.block_ctx == 0
-                assert key.shape[1] == value.shape[1]
-                assert query.shape[1] <= key.shape[1]
-                sample = False
-            else:
-                key = self.cache['key']
-                value = self.cache['value']
-        return query, key, value, sample
-
-    def prime_qkv(self, x, encoder_kv=None, sample=False):
-        curr_ctx = x.shape[1]
-        #print(curr_ctx)
-        assert encoder_kv is None
-        query, key, value = x.chunk(3, dim=2)
-        if sample:
-            if self._cache_len() < self._prime_len:
-                self._append_cache(key, value)
-            if self._cache_len() > self._prime_len:
-                self._slice_cache(0, self._prime_len)
-            key, value = self.cache['key'], self.cache['value']
-            self.sample_t += curr_ctx
-            #print('prime_qkv', self.sample_t, curr_ctx, self.__hash__())
-            assert key.shape[1] == value.shape[1] == self._suff_cache_len(), f'k: {key.shape}, v: {value.shape}, prime_dims: {self._suff_cache_len()}'
-        else:
-            assert key.shape[1] == value.shape[1] == self.n_ctx, f'k: {key.shape}, v: {value.shape}, prime_dims: {self.n_ctx}'
-        assert key.shape[0] == value.shape[0] == query.shape[0], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
-        assert key.shape[2] == value.shape[2] == query.shape[2], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
-        return query, key, value, sample
-
-    def decode_qkv(self, x, encoder_kv=None, sample=False):
-        curr_ctx = x.shape[1]
-        #print(curr_ctx)
-        assert encoder_kv is not None
-        query = x
-        if sample:
-            if self.sample_t == 0:
-                self.cache['key'], self.cache['value'] = self.c_enc_kv(encoder_kv.type_as(x)).chunk(2, dim=2)
-            key, value = self.cache['key'], self.cache['value']
-            self.sample_t += curr_ctx
-            #print('decode_qkv', self.sample_t, curr_ctx, self.__hash__())
-        else:
-            key, value = self.c_enc_kv(encoder_kv.type_as(x)).chunk(2, dim=2)
-        assert key.shape[0] == value.shape[0] == query.shape[0], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
-        assert key.shape[1] == value.shape[1] == self.encoder_dims, f'k: {key.shape}, v: {value.shape}, enc_dims: {self.encoder_dims}'
-        assert key.shape[2] == value.shape[2] == query.shape[2], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
-        return query, key, value, sample
-
     def forward(self, x, encoder_kv=None, sample=False):
         curr_ctx = x.shape[1]
         x = self.c_attn(x)
         print(self.__hash__(), self.sample_t, x.shape, encoder_kv, sample)
-        query, key, value, sample = self.qkv(x, encoder_kv=encoder_kv, sample=sample)
+        query, key, value, sample = self.qkv(self, x, encoder_kv=encoder_kv, sample=sample)
         if self.checkpoint_attn == 2 and not sample:
             a = checkpoint(lambda q,k,v,s=sample: self.attn(q,k,v,s), (query, key, value), (), True)
         else:
