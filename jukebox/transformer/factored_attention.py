@@ -234,7 +234,7 @@ class FactoredAttention(nn.Module):
         query, key, value = x.chunk(3, dim=2)
         if sample:
             self.sample_t += curr_ctx
-            print(self.sample_t, curr_ctx)
+            print('factored_qkv', self.sample_t, curr_ctx, self)
             key, value = self._append_cache(key, value)
             l_cache = self._suff_cache_len()
             if self._cache_len() > l_cache:
@@ -266,7 +266,7 @@ class FactoredAttention(nn.Module):
                 self._slice_cache(0, self._prime_len)
             key, value = self.cache['key'], self.cache['value']
             self.sample_t += curr_ctx
-            print(self.sample_t, curr_ctx)
+            print('prime_qkv', self.sample_t, curr_ctx, self)
             assert key.shape[1] == value.shape[1] == self._suff_cache_len(), f'k: {key.shape}, v: {value.shape}, prime_dims: {self._suff_cache_len()}'
         else:
             assert key.shape[1] == value.shape[1] == self.n_ctx, f'k: {key.shape}, v: {value.shape}, prime_dims: {self.n_ctx}'
@@ -284,7 +284,7 @@ class FactoredAttention(nn.Module):
                 self.cache['key'], self.cache['value'] = self.c_enc_kv(encoder_kv.type_as(x)).chunk(2, dim=2)
             key, value = self.cache['key'], self.cache['value']
             self.sample_t += curr_ctx
-            print(self.sample_t, curr_ctx)
+            print('decode_qkv', self.sample_t, curr_ctx, self)
         else:
             key, value = self.c_enc_kv(encoder_kv.type_as(x)).chunk(2, dim=2)
         assert key.shape[0] == value.shape[0] == query.shape[0], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
@@ -416,6 +416,7 @@ class FactoredAttention(nn.Module):
             f"Expected pos grad {exp_pos_grad} got {pos_grad} for attn_func {self.attn_func} pos {pos} l {l} blocks {blocks}"
 
     def check_cache(self, n_samples, sample_t, fp16):
+        print(self)
         assert self.sample_t == sample_t, f"{self.sample_t} != {sample_t}"
         if sample_t == 0:
             assert self.cache == {}
