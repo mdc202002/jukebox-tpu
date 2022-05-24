@@ -229,11 +229,12 @@ class FactoredAttention(nn.Module):
 
     def factored_qkv(self, x, encoder_kv=None, sample=False):
         curr_ctx = x.shape[1]
-        print(curr_ctx)
+        #print(curr_ctx)
         assert encoder_kv is None
         query, key, value = x.chunk(3, dim=2)
         if sample:
             self.sample_t += curr_ctx
+            print(self.sample_t, curr_ctx)
             key, value = self._append_cache(key, value)
             l_cache = self._suff_cache_len()
             if self._cache_len() > l_cache:
@@ -255,7 +256,7 @@ class FactoredAttention(nn.Module):
 
     def prime_qkv(self, x, encoder_kv=None, sample=False):
         curr_ctx = x.shape[1]
-        print(curr_ctx)
+        #print(curr_ctx)
         assert encoder_kv is None
         query, key, value = x.chunk(3, dim=2)
         if sample:
@@ -265,6 +266,7 @@ class FactoredAttention(nn.Module):
                 self._slice_cache(0, self._prime_len)
             key, value = self.cache['key'], self.cache['value']
             self.sample_t += curr_ctx
+            print(self.sample_t, curr_ctx)
             assert key.shape[1] == value.shape[1] == self._suff_cache_len(), f'k: {key.shape}, v: {value.shape}, prime_dims: {self._suff_cache_len()}'
         else:
             assert key.shape[1] == value.shape[1] == self.n_ctx, f'k: {key.shape}, v: {value.shape}, prime_dims: {self.n_ctx}'
@@ -274,7 +276,7 @@ class FactoredAttention(nn.Module):
 
     def decode_qkv(self, x, encoder_kv=None, sample=False):
         curr_ctx = x.shape[1]
-        print(curr_ctx)
+        #print(curr_ctx)
         assert encoder_kv is not None
         query = x
         if sample:
@@ -282,6 +284,7 @@ class FactoredAttention(nn.Module):
                 self.cache['key'], self.cache['value'] = self.c_enc_kv(encoder_kv.type_as(x)).chunk(2, dim=2)
             key, value = self.cache['key'], self.cache['value']
             self.sample_t += curr_ctx
+            print(self.sample_t, curr_ctx)
         else:
             key, value = self.c_enc_kv(encoder_kv.type_as(x)).chunk(2, dim=2)
         assert key.shape[0] == value.shape[0] == query.shape[0], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
