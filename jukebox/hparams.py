@@ -118,7 +118,7 @@ prior_5b = Hyperparams(
     prime_loss_fraction=0.0,
     merged_decoder=True,
     restore_prior=REMOTE_PREFIX + 'jukebox/models/5b/prior_level_2.pth.tar',
-    fp16_params=True,
+    fp16_params=False,
 )
 prior_5b.update(labels)
 HPARAMS_REGISTRY["prior_5b"] = prior_5b
@@ -148,7 +148,7 @@ prior_5b_lyrics = Hyperparams(
     prime_loss_fraction=0.4,
     merged_decoder=True,
     restore_prior=REMOTE_PREFIX + 'jukebox/models/5b_lyrics/prior_level_2.pth.tar',
-    fp16_params=True,
+    fp16_params=False,
     alignment_layer=68,
     alignment_head=2,
 )
@@ -304,8 +304,8 @@ small_upsampler = Hyperparams(
 HPARAMS_REGISTRY["small_upsampler"] = small_upsampler
 
 all_fp16 = Hyperparams(
-    fp16=True,
-    fp16_params=True,
+    fp16=False,
+    fp16_params=False,
     fp16_opt=True,
     fp16_scale_window=250,
 )
