@@ -7,6 +7,118 @@ import torch.nn.functional as F
 from jukebox.transformer.ops import Conv1D
 from jukebox.utils.checkpoint import checkpoint
 
+### extracted attn
+
+
+def dense_attn(self, query, key, value, sample):
+    query = self.split_heads(query)
+    key = self.split_heads(key, k=True)
+    value = self.split_heads(value)
+    if self.checkpoint_attn == 1 and not sample:
+        a = checkpoint(lambda q,k,v,s=sample: self._attn(q,k,v,s), (query, key, value),
+                   (), True)
+    else:
+        a = self._attn(query,key,value,sample)
+    a = self.merge_heads(a)
+    return a
+
+def block_attn(self, q, k, v, sample):
+    blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
+    bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
+    if sample:
+        assert l == self._suff_cache_len(), f"{l} != {self._suff_cache_len()}"
+        return dense_attn(self, q, k, v, sample).reshape(bs, 1, d).contiguous()
+    else:
+        ql = q.shape[1]
+        q = q.reshape(bs * ql // block_ctx, block_ctx, d).contiguous()
+        if ql < l:
+            l = ql
+            k = k[:, -l:].contiguous()
+            v = v[:, -l:].contiguous()
+        k = k.reshape(bs * l // block_ctx, block_ctx, d).contiguous()
+        v = v.reshape(bs * l // block_ctx, block_ctx, d).contiguous()
+        return dense_attn(self, q, k, v, sample).reshape(bs, l, d).contiguous()
+
+def transpose_block_attn(self, q, k, v, sample):
+    blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
+    bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
+    if sample:
+        block_l = (l - 1) % block_ctx
+        k = k[:,block_l::block_ctx,:]
+        v = v[:,block_l::block_ctx,:]
+        return dense_attn(self, q, k, v, sample).reshape(bs, 1, d).contiguous()
+    else:
+        ql = q.shape[1]
+        q = q.reshape(bs, ql // block_ctx, block_ctx, d).contiguous().transpose(1,2).contiguous().reshape(bs * block_ctx, ql // block_ctx, d).contiguous()
+        k = k.reshape(bs,  l // block_ctx, block_ctx, d).contiguous().transpose(1,2).contiguous().reshape(bs * block_ctx,  l // block_ctx, d).contiguous()
+        v = v.reshape(bs,  l // block_ctx, block_ctx, d).contiguous().transpose(1,2).contiguous().reshape(bs * block_ctx,  l // block_ctx, d).contiguous()
+        return dense_attn(self, q, k, v, sample).reshape(bs, block_ctx, ql // block_ctx, d).contiguous().transpose(1,2).contiguous().reshape(bs, ql, d).contiguous()
+
+def prev_block_attn(self, q, k, v, sample):
+    blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
+    bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
+    if sample:
+        assert l == self._suff_cache_len(), f"{l} != {self._suff_cache_len()}"
+        block = (l - 1) // block_ctx
+        prev_l = (block - 1) * block_ctx
+        if block > 0:
+            assert prev_l == 0
+            k = k[:, prev_l:prev_l + block_ctx, :]
+            v = v[:, prev_l:prev_l + block_ctx, :]
+        else:
+            k = t.zeros(bs, block_ctx, d, device=q.device, dtype=q.dtype)
+            v = t.zeros(bs, block_ctx, d, device=q.device, dtype=q.dtype)
+        return dense_attn(self, q, k, v, sample).reshape(bs, 1, d).contiguous()
+    else:
+        ql = q.shape[1]
+        q = q.reshape(bs * ql // block_ctx, block_ctx, d).contiguous()
+        k = t.nn.functional.pad(k.reshape(bs, l // block_ctx, block_ctx, d).contiguous()[:, :-1, :, :], (0,0,0,0,1,0)).reshape(bs * l // block_ctx, block_ctx, d).contiguous()
+        v = t.nn.functional.pad(v.reshape(bs, l // block_ctx, block_ctx, d).contiguous()[:, :-1, :, :], (0,0,0,0,1,0)).reshape(bs * l // block_ctx, block_ctx, d).contiguous()
+        if ql < l:
+            qb = ql // block_ctx
+            kb =  l // block_ctx
+            l = ql
+            k = k.reshape(bs, kb, block_ctx, d).contiguous()[:, -qb:].contiguous().reshape(bs * qb, block_ctx, d).contiguous()
+            v = v.reshape(bs, kb, block_ctx, d).contiguous()[:, -qb:].contiguous().reshape(bs * qb, block_ctx, d).contiguous()
+        return dense_attn(self, q, k, v, sample).reshape(bs, l, d).contiguous()
+
+def summary_attn(self, q, k, v, sample):
+    blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
+    bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
+    if sample:
+        k = t.nn.functional.pad(k[:, block_ctx-1:blocks*block_ctx-1:block_ctx, :],(0,0,1,0))
+        v = t.nn.functional.pad(v[:, block_ctx-1:blocks*block_ctx-1:block_ctx, :],(0,0,1,0))
+        return dense_attn(self, q, k, v, sample).reshape(bs, 1, d).contiguous()
+    else:
+        k = t.nn.functional.pad(k.reshape(bs, blocks, l // blocks, d).contiguous()[:, :-1, -1, :],(0,0,1,0)) # bs, blocks, d
+        v = t.nn.functional.pad(v.reshape(bs, blocks, l // blocks, d).contiguous()[:, :-1, -1, :],(0,0,1,0)) # bs, blocks, d
+        return dense_attn(self, q, k, v, sample).reshape(bs, l, d).contiguous()
+
+def summary_spread_attn(self, q, k, v, sample):
+    blocks, block_ctx, spread = self.blocks, self.block_ctx, self.spread # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
+    bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
+    if sample:
+        assert False, "Not yet implemented"
+        # k = t.nn.functional.pad(k,(0,0,block_ctx,(-l)%block_ctx)).reshape(bs, -1, block_ctx, d).contiguous()[:,:-1,-spread:,:].contiguous().reshape(bs, -1, d).contiguous()
+        # v = t.nn.functional.pad(v,(0,0,block_ctx,(-l)%block_ctx)).reshape(bs, -1, block_ctx, d).contiguous()[:,:-1,-spread:,:].contiguous().reshape(bs, -1, d).contiguous()
+        # return self.dense_attn(q, k, v, sample).reshape(bs, 1, d).contiguous()
+    else:
+        k = t.nn.functional.pad(k.reshape(bs, blocks, l // blocks, d).contiguous()[:, :-1, -spread:, :],(0,0,0,0,1,0)).contiguous().reshape(bs, blocks * spread, d).contiguous()  # bs, blocks * spread, d
+        v = t.nn.functional.pad(v.reshape(bs, blocks, l // blocks, d).contiguous()[:, :-1, -spread:, :],(0,0,0,0,1,0)).contiguous().reshape(bs, blocks * spread, d).contiguous()  # bs, blocks * spread, d
+        return dense_attn(self, q, k, v, sample).reshape(bs, l, d).contiguous()
+
+def prime_attn(self, q, k, v, sample):
+    prime_len = self._prime_len
+    k = k[:, :prime_len]
+    v = v[:, :prime_len]
+    return dense_attn(self, q, k, v, sample)
+
+def decode_attn(self, q, k, v, sample):
+    assert k.shape[1] == v.shape[1] == self.encoder_dims, f'k: {k.shape}, v: {v.shape}, enc_dims: {self.encoder_dims}'
+    return dense_attn(self, q, k, v, sample)
+
+
+### extracted qkv
 
 def factored_qkv(self, x, encoder_kv=None, sample=False):
     curr_ctx = x.shape[1]
@@ -122,14 +234,14 @@ class FactoredAttention(nn.Module):
         # Sequence of length l is factored as [blocks, l // blocks]
         self.attn_func = attn_func
         self.qkv, self.attn, self.attn_mask = {
-            0: (factored_qkv, self.dense_attn, 'autoregressive'),              # Attend to all positions
-            1: (factored_qkv, self.block_attn, 'autoregressive'),              # Attend to your block
-            2: (factored_qkv, self.transpose_block_attn, 'autoregressive'),    # Attend to transpose block
-            3: (factored_qkv, self.prev_block_attn, None),                     # Attend to previous block
-            4: (factored_qkv, self.summary_attn, 'summary'),                   # Attend to last position of each block
-            5: (factored_qkv, self.summary_spread_attn, 'summary'),
-            6: (decode_qkv, self.decode_attn, None),
-            7: (prime_qkv, self.prime_attn, 'prime')
+            0: (factored_qkv, dense_attn, 'autoregressive'),              # Attend to all positions
+            1: (factored_qkv, block_attn, 'autoregressive'),              # Attend to your block
+            2: (factored_qkv, transpose_block_attn, 'autoregressive'),    # Attend to transpose block
+            3: (factored_qkv, prev_block_attn, None),                     # Attend to previous block
+            4: (factored_qkv, summary_attn, 'summary'),                   # Attend to last position of each block
+            5: (factored_qkv, summary_spread_attn, 'summary'),
+            6: (decode_qkv, decode_attn, None),
+            7: (prime_qkv, prime_attn, 'prime')
         }[attn_func] # Attend to last k position of each block
 
         self.blocks = blocks
@@ -186,113 +298,6 @@ class FactoredAttention(nn.Module):
             return x.permute(0, 2, 3, 1)
         else:
             return x.permute(0, 2, 1, 3)
-
-    def dense_attn(self, query, key, value, sample):
-        query = self.split_heads(query)
-        key = self.split_heads(key, k=True)
-        value = self.split_heads(value)
-        if self.checkpoint_attn == 1 and not sample:
-            a = checkpoint(lambda q,k,v,s=sample: self._attn(q,k,v,s), (query, key, value),
-                       (), True)
-        else:
-            a = self._attn(query,key,value,sample)
-        a = self.merge_heads(a)
-        return a
-
-    def block_attn(self, q, k, v, sample):
-        blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
-        bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
-        if sample:
-            assert l == self._suff_cache_len(), f"{l} != {self._suff_cache_len()}"
-            return self.dense_attn(q, k, v, sample).reshape(bs, 1, d).contiguous()
-        else:
-            ql = q.shape[1]
-            q = q.reshape(bs * ql // block_ctx, block_ctx, d).contiguous()
-            if ql < l:
-                l = ql
-                k = k[:, -l:].contiguous()
-                v = v[:, -l:].contiguous()
-            k = k.reshape(bs * l // block_ctx, block_ctx, d).contiguous()
-            v = v.reshape(bs * l // block_ctx, block_ctx, d).contiguous()
-            return self.dense_attn(q, k, v, sample).reshape(bs, l, d).contiguous()
-
-    def transpose_block_attn(self, q, k, v, sample):
-        blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
-        bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
-        if sample:
-            block_l = (l - 1) % block_ctx
-            k = k[:,block_l::block_ctx,:]
-            v = v[:,block_l::block_ctx,:]
-            return self.dense_attn(q, k, v, sample).reshape(bs, 1, d).contiguous()
-        else:
-            ql = q.shape[1]
-            q = q.reshape(bs, ql // block_ctx, block_ctx, d).contiguous().transpose(1,2).contiguous().reshape(bs * block_ctx, ql // block_ctx, d).contiguous()
-            k = k.reshape(bs,  l // block_ctx, block_ctx, d).contiguous().transpose(1,2).contiguous().reshape(bs * block_ctx,  l // block_ctx, d).contiguous()
-            v = v.reshape(bs,  l // block_ctx, block_ctx, d).contiguous().transpose(1,2).contiguous().reshape(bs * block_ctx,  l // block_ctx, d).contiguous()
-            return self.dense_attn(q, k, v, sample).reshape(bs, block_ctx, ql // block_ctx, d).contiguous().transpose(1,2).contiguous().reshape(bs, ql, d).contiguous()
-
-    def prev_block_attn(self, q, k, v, sample):
-        blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
-        bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
-        if sample:
-            assert l == self._suff_cache_len(), f"{l} != {self._suff_cache_len()}"
-            block = (l - 1) // block_ctx
-            prev_l = (block - 1) * block_ctx
-            if block > 0:
-                assert prev_l == 0
-                k = k[:, prev_l:prev_l + block_ctx, :]
-                v = v[:, prev_l:prev_l + block_ctx, :]
-            else:
-                k = t.zeros(bs, block_ctx, d, device=q.device, dtype=q.dtype)
-                v = t.zeros(bs, block_ctx, d, device=q.device, dtype=q.dtype)
-            return self.dense_attn(q, k, v, sample).reshape(bs, 1, d).contiguous()
-        else:
-            ql = q.shape[1]
-            q = q.reshape(bs * ql // block_ctx, block_ctx, d).contiguous()
-            k = t.nn.functional.pad(k.reshape(bs, l // block_ctx, block_ctx, d).contiguous()[:, :-1, :, :], (0,0,0,0,1,0)).reshape(bs * l // block_ctx, block_ctx, d).contiguous()
-            v = t.nn.functional.pad(v.reshape(bs, l // block_ctx, block_ctx, d).contiguous()[:, :-1, :, :], (0,0,0,0,1,0)).reshape(bs * l // block_ctx, block_ctx, d).contiguous()
-            if ql < l:
-                qb = ql // block_ctx
-                kb =  l // block_ctx
-                l = ql
-                k = k.reshape(bs, kb, block_ctx, d).contiguous()[:, -qb:].contiguous().reshape(bs * qb, block_ctx, d).contiguous()
-                v = v.reshape(bs, kb, block_ctx, d).contiguous()[:, -qb:].contiguous().reshape(bs * qb, block_ctx, d).contiguous()
-            return self.dense_attn(q, k, v, sample).reshape(bs, l, d).contiguous()
-
-    def summary_attn(self, q, k, v, sample):
-        blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
-        bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
-        if sample:
-            k = t.nn.functional.pad(k[:, block_ctx-1:blocks*block_ctx-1:block_ctx, :],(0,0,1,0))
-            v = t.nn.functional.pad(v[:, block_ctx-1:blocks*block_ctx-1:block_ctx, :],(0,0,1,0))
-            return self.dense_attn(q, k, v, sample).reshape(bs, 1, d).contiguous()
-        else:
-            k = t.nn.functional.pad(k.reshape(bs, blocks, l // blocks, d).contiguous()[:, :-1, -1, :],(0,0,1,0)) # bs, blocks, d
-            v = t.nn.functional.pad(v.reshape(bs, blocks, l // blocks, d).contiguous()[:, :-1, -1, :],(0,0,1,0)) # bs, blocks, d
-            return self.dense_attn(q, k, v, sample).reshape(bs, l, d).contiguous()
-
-    def summary_spread_attn(self, q, k, v, sample):
-        blocks, block_ctx, spread = self.blocks, self.block_ctx, self.spread # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
-        bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
-        if sample:
-            assert False, "Not yet implemented"
-            # k = t.nn.functional.pad(k,(0,0,block_ctx,(-l)%block_ctx)).reshape(bs, -1, block_ctx, d).contiguous()[:,:-1,-spread:,:].contiguous().reshape(bs, -1, d).contiguous()
-            # v = t.nn.functional.pad(v,(0,0,block_ctx,(-l)%block_ctx)).reshape(bs, -1, block_ctx, d).contiguous()[:,:-1,-spread:,:].contiguous().reshape(bs, -1, d).contiguous()
-            # return self.dense_attn(q, k, v, sample).reshape(bs, 1, d).contiguous()
-        else:
-            k = t.nn.functional.pad(k.reshape(bs, blocks, l // blocks, d).contiguous()[:, :-1, -spread:, :],(0,0,0,0,1,0)).contiguous().reshape(bs, blocks * spread, d).contiguous()  # bs, blocks * spread, d
-            v = t.nn.functional.pad(v.reshape(bs, blocks, l // blocks, d).contiguous()[:, :-1, -spread:, :],(0,0,0,0,1,0)).contiguous().reshape(bs, blocks * spread, d).contiguous()  # bs, blocks * spread, d
-            return self.dense_attn(q, k, v, sample).reshape(bs, l, d).contiguous()
-
-    def prime_attn(self, q, k, v, sample):
-        prime_len = self._prime_len
-        k = k[:, :prime_len]
-        v = v[:, :prime_len]
-        return self.dense_attn(q, k, v, sample)
-
-    def decode_attn(self, q, k, v, sample):
-        assert k.shape[1] == v.shape[1] == self.encoder_dims, f'k: {k.shape}, v: {v.shape}, enc_dims: {self.encoder_dims}'
-        return self.dense_attn(q, k, v, sample)
 
     def forward(self, x, encoder_kv=None, sample=False):
         curr_ctx = x.shape[1]
