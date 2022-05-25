@@ -423,13 +423,13 @@ class FactoredAttention(nn.Module):
         assert (len(pos_grad) == len(exp_pos_grad)) and (pos_grad == exp_pos_grad).all(), \
             f"Expected pos grad {exp_pos_grad} got {pos_grad} for attn_func {self.attn_func} pos {pos} l {l} blocks {blocks}"
 
-    def check_cache(self, n_samples, sample_t, fp16):
+    def check_cache(self, n_samples, sample_t, fp32):
         print(self.__hash__())
         assert self.sample_t == sample_t, f"{self.sample_t} != {sample_t}"
         if sample_t == 0:
             assert self.cache == {}
         else:
-            dtype = {True: t.float16, False: t.float32}[fp16]
+            dtype = {True: t.float16, False: t.float32}[fp32]
             l_cache = self._suff_cache_len()
             assert self.cache['key'].shape == (n_samples, l_cache, self.n_state)
             assert self.cache['value'].shape == (n_samples, l_cache, self.n_state)
