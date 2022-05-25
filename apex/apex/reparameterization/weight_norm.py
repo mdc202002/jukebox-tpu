@@ -11,10 +11,10 @@ def _norm(p, dim):
         return p.norm()
     elif dim == 0:
         output_size = (p.size(0),) + (1,) * (p.dim() - 1)
-        return p.contiguous().view(p.size(0), -1).norm(dim=1).view(*output_size)
+        return p.contiguous().reshape(p.size(0), -1).contiguous().norm(dim=1).reshape(*output_size).contiguous()
     elif dim == p.dim() - 1:
         output_size = (1,) * (p.dim() - 1) + (p.size(-1),)
-        return p.contiguous().view(-1, p.size(-1)).norm(dim=0).view(*output_size)
+        return p.contiguous().reshape(-1, p.size(-1)).contiguous().norm(dim=0).reshape(*output_size).contiguous()
     return _norm(p.transpose(0, dim), 0).transpose(0, dim)
 
 HALF_TYPES = (torch.cuda.HalfTensor, torch.HalfTensor)

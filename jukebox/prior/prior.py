@@ -170,17 +170,17 @@ class SimplePrior(nn.Module):
         for i in range(len(xs)):
             x, shape, dims = xs[i], self.prior_shapes[i], self.prior_dims[i]
             bins, bins_shift = int(self.prior_bins[i]), int(self.prior_bins_shift[i])
-            assert isinstance(x, t.cuda.LongTensor), x
+            #assert isinstance(x, t.cuda.LongTensor), x
             assert (0 <= x).all() and (x < bins).all()
             #assert_shape(x, (N, *shape))
-            xs[i] = (xs[i] + bins_shift).view(N, -1)
+            xs[i] = (xs[i] + bins_shift).reshape(N, -1).contiguous()
 
         for i in range(len(conds)):
             cond, shape, dims = conds[i], self.prior_shapes[i], self.prior_dims[i]
             if cond is not None:
                 assert_shape(cond, (N, dims, self.prior_width))
             else:
-                conds[i] = t.zeros((N, dims, self.prior_width), dtype=t.float, device='cuda')
+                conds[i] = t.zeros((N, dims, self.prior_width), dtype=t.float, device='xla:1')
 
         return t.cat(xs, dim=1), t.cat(conds, dim=1)
 
@@ -195,8 +195,8 @@ class SimplePrior(nn.Module):
             # assert_shape(x, (N, dims))
             shape = self.prior_shapes[i]
             bins, bins_shift = int(self.prior_bins[i]), int(self.prior_bins_shift[i])
-            # xs[i] = (xs[i] - bins_shift).view(N, *shape) #view(N, -1, *shape[1:])
-            xs[i] = (xs[i] - bins_shift).view(N, -1, *shape[1:])
+            # xs[i] = (xs[i] - bins_shift).reshape(N, *shape).contiguous() #view(N, -1, *shape[1:])
+            xs[i] = (xs[i] - bins_shift).reshape(N, -1, *shape[1:]).contiguous()
             xs[i] = t.clamp(xs[i], min=0)  # If not masking loss, model may have generated lyric/midi tokens which are now shifted <0 by bin_shift
             assert (xs[i] < bins).all(), f'rank: {dist.get_rank()}, bins: {bins}, dims {dims}, shape {shape}, prior_shape {self.prior_shapes}, bins_shift {bins_shift}, xs[i]: {xs[i]}'
 
@@ -285,7 +285,7 @@ class SimplePrior(nn.Module):
     def get_encoder_kv(self, prime, fp16=False, sample=False):
         if self.n_tokens != 0 and self.use_tokens:
             if sample:
-                self.prime_prior.cuda()
+                self.prime_prior.to('xla:1')
             N = prime.shape[0]
             prime_acts = self.prime_prior(prime, None, None, None, fp16=fp16)
             assert_shape(prime_acts, (N, self.prime_loss_dims, self.prime_acts_width))
@@ -304,9 +304,9 @@ class SimplePrior(nn.Module):
         if self.use_tokens:
             encoder_kv = encoder_kv.float()
             encoder_kv = self.prime_x_out(encoder_kv)
-            prime_loss = nn.functional.cross_entropy(encoder_kv.view(-1, self.prime_bins), prime_t.view(-1)) / np.log(2.)
+            prime_loss = nn.functional.cross_entropy(encoder_kv.reshape(-1, self.prime_bins).contiguous(), prime_t.reshape(-1).contiguous()) / np.log(2.)
         else:
-            prime_loss = t.tensor(0.0, device='cuda')
+            prime_loss = t.tensor(0.0, device='xla:1')
         return prime_loss
 
     def z_forward(self, z, z_conds=[], y=None, fp16=False, get_preds=False, get_attn_weights=False):

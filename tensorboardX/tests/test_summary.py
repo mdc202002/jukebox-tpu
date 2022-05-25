@@ -8,7 +8,7 @@ import unittest
 
 def tensor_N(shape, dtype=float):
     numel = np.prod(shape)
-    x = (np.arange(numel, dtype=dtype)).reshape(shape)
+    x = (np.arange(numel, dtype=dtype)).reshape(shape).contiguous()
     return x
 
 class SummaryTest(unittest.TestCase):

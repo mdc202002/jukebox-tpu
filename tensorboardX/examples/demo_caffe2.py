@@ -258,7 +258,7 @@ conv = workspace.FetchBlob('conv1')
 shape = list(conv.shape)
 shape[1] = 1
 # We can look into any channel. This of it as a feature model learned
-conv = conv[:, 15, :, :].reshape(shape)
+conv = conv[:, 15, :, :].reshape(shape).contiguous()
 
 # run a test pass on the test net
 workspace.RunNetOnce(test_model.param_init_net)

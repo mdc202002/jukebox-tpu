@@ -198,7 +198,7 @@ def make_histogram(values, bins, max_bins=None):
     """Convert values into a histogram proto using logic from histogram.cc."""
     if values.size == 0:
         raise ValueError('The input has no element.')
-    values = values.reshape(-1)
+    values = values.reshape(-1).contiguous()
     counts, limits = np.histogram(values, bins=bins)
     num_bins = len(counts)
     if max_bins is not None and num_bins > max_bins:
@@ -207,7 +207,7 @@ def make_histogram(values, bins, max_bins=None):
         if subsampling_remainder != 0:
             counts = np.pad(counts, pad_width=[[0, subsampling - subsampling_remainder]],
                             mode="constant", constant_values=0)
-        counts = counts.reshape(-1, subsampling).sum(axis=-1)
+        counts = counts.reshape(-1, subsampling).contiguous().sum(axis=-1)
         new_limits = np.empty((counts.size + 1,), limits.dtype)
         new_limits[:-1] = limits[:-1:subsampling]
         new_limits[-1] = limits[-1]
@@ -441,7 +441,7 @@ def pr_curve_raw(tag, tp, fp, tn, fn, precision, recall, num_thresholds=127, wei
         plugin_name='pr_curves', content=pr_curve_plugin_data)
     smd = SummaryMetadata(plugin_data=PluginData)
     tensor = TensorProto(dtype='DT_FLOAT',
-                         float_val=data.reshape(-1).tolist(),
+                         float_val=data.reshape(-1).contiguous().tolist(),
                          tensor_shape=TensorShapeProto(
                              dim=[TensorShapeProto.Dim(size=data.shape[0]), TensorShapeProto.Dim(size=data.shape[1])]))
     return Summary(value=[Summary.Value(tag=tag, metadata=smd, tensor=tensor)])
@@ -458,7 +458,7 @@ def pr_curve(tag, labels, predictions, num_thresholds=127, weights=None):
         plugin_name='pr_curves', content=pr_curve_plugin_data)
     smd = SummaryMetadata(plugin_data=PluginData)
     tensor = TensorProto(dtype='DT_FLOAT',
-                         float_val=data.reshape(-1).tolist(),
+                         float_val=data.reshape(-1).contiguous().tolist(),
                          tensor_shape=TensorShapeProto(
                              dim=[TensorShapeProto.Dim(size=data.shape[0]), TensorShapeProto.Dim(size=data.shape[1])]))
     return Summary(value=[Summary.Value(tag=tag, metadata=smd, tensor=tensor)])
@@ -511,7 +511,7 @@ def _get_tensor_summary(tag, tensor, content_type, json_config):
             content=content))
 
     tensor = TensorProto(dtype='DT_FLOAT',
-                         float_val=tensor.reshape(-1).tolist(),
+                         float_val=tensor.reshape(-1).contiguous().tolist(),
                          tensor_shape=TensorShapeProto(dim=[
                              TensorShapeProto.Dim(size=tensor.shape[0]),
                              TensorShapeProto.Dim(size=tensor.shape[1]),

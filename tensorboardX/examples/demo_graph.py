@@ -127,7 +127,7 @@ class Net1(nn.Module):
         x = F.relu(x) + F.relu(-x)
         x = F.relu(F.max_pool2d(self.conv2_drop(self.conv2(x)), 2))
         x = self.bn(x)
-        x = x.view(-1, 320)
+        x = x.reshape(-1, 320).contiguous()
         x = F.relu(self.fc1(x))
         x = F.dropout(x, training=self.training)
         x = self.fc2(x)
@@ -147,7 +147,7 @@ class Net2(nn.Module):
     def forward(self, x):
         x = F.relu(F.max_pool2d(self.conv1(x), 2))
         x = F.relu(F.max_pool2d(self.conv2_drop(self.conv2(x)), 2))
-        x = x.view(-1, 320)
+        x = x.reshape(-1, 320).contiguous()
         x = F.relu(self.fc1(x))
         x = F.dropout(x, training=self.training)
         x = self.fc2(x)
@@ -259,10 +259,10 @@ inputs = [torch.randn(1, 3) for _ in range(5)]  # make a sequence of length 5
 hidden = (torch.randn(1, 1, 3),
           torch.randn(1, 1, 3))
 for i in inputs:
-    out, hidden = lstm(i.view(1, 1, -1), hidden)
+    out, hidden = lstm(i.reshape(1, 1, -1).contiguous(), hidden)
 
 with SummaryWriter(comment='lstm') as w:
-    w.add_graph(lstm, (torch.randn(1, 3).view(1, 1, -1), hidden), verbose=True)
+    w.add_graph(lstm, (torch.randn(1, 3).reshape(1, 1, -1).contiguous(), hidden), verbose=True)
 
 
 import pytest

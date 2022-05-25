@@ -503,7 +503,7 @@ class SummaryWriter(object):
             dummy_data = []
             for idx, value in enumerate(range(30)):
                 dummy_data += [idx + 0.001] * value
-            values = np.array(dummy_data).astype(float).reshape(-1)
+            values = np.array(dummy_data).astype(float).reshape(-1).contiguous()
             counts, limits = np.histogram(values)
             sum_sq = values.dot(values)
             with SummaryWriter() as summary_writer:
@@ -558,12 +558,12 @@ class SummaryWriter(object):
             from tensorboardX import SummaryWriter
             import numpy as np
             img = np.zeros((3, 100, 100))
-            img[0] = np.arange(0, 10000).reshape(100, 100) / 10000
-            img[1] = 1 - np.arange(0, 10000).reshape(100, 100) / 10000
+            img[0] = np.arange(0, 10000).reshape(100, 100).contiguous() / 10000
+            img[1] = 1 - np.arange(0, 10000).reshape(100, 100).contiguous() / 10000
 
             img_HWC = np.zeros((100, 100, 3))
-            img_HWC[:, :, 0] = np.arange(0, 10000).reshape(100, 100) / 10000
-            img_HWC[:, :, 1] = 1 - np.arange(0, 10000).reshape(100, 100) / 10000
+            img_HWC[:, :, 0] = np.arange(0, 10000).reshape(100, 100).contiguous() / 10000
+            img_HWC[:, :, 1] = 1 - np.arange(0, 10000).reshape(100, 100).contiguous() / 10000
 
             writer = SummaryWriter()
             writer.add_image('my_image', img, 0)
@@ -607,8 +607,8 @@ class SummaryWriter(object):
 
             img_batch = np.zeros((16, 3, 100, 100))
             for i in range(16):
-                img_batch[i, 0] = np.arange(0, 10000).reshape(100, 100) / 10000 / 16 * i
-                img_batch[i, 1] = (1 - np.arange(0, 10000).reshape(100, 100) / 10000) / 16 * i
+                img_batch[i, 0] = np.arange(0, 10000).reshape(100, 100).contiguous() / 10000 / 16 * i
+                img_batch[i, 1] = (1 - np.arange(0, 10000).reshape(100, 100).contiguous() / 10000) / 16 * i
 
             writer = SummaryWriter()
             writer.add_images('my_image_batch', img_batch, 0)

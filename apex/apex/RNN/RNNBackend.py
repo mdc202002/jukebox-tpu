@@ -18,7 +18,7 @@ def flatten_list(tens_list):
     if not is_iterable(tens_list):
         return tens_list
     
-    return torch.cat(tens_list, dim=0).view(len(tens_list), *tens_list[0].size() )
+    return torch.cat(tens_list, dim=0).reshape(len(tens_list), *tens_list[0].size() ).contiguous()
 
     
 #These modules always assumes batch_first

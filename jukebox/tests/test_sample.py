@@ -7,7 +7,7 @@ from jukebox.hparams import Hyperparams
 def repeat(x, n, dim):
     if dim == -1:
         dim = len(x.shape) - 1
-    return x.reshape(int(np.prod(x.shape[:dim+1])), 1, int(np.prod(x.shape[dim+1:]))).repeat(1,n,1).reshape(*x.shape[:dim], n * x.shape[dim], *x.shape[dim+1:])
+    return x.reshape(int(np.prod(x.shape[:dim+1])), 1, int(np.prod(x.shape[dim+1:]))).contiguous().repeat(1,n,1).reshape(*x.shape[:dim], n * x.shape[dim], *x.shape[dim+1:]).contiguous()
 
 # Tests
 class DummyPrior:
@@ -42,7 +42,7 @@ class DummyPrior:
 
     def ancestral_sample(self, n_samples, z_conds=None, y=None):
         z = t.zeros((n_samples, self.n_ctx), dtype=t.long, device='cuda') + \
-            t.arange(0, self.n_ctx, dtype=t.long, device='cuda').view(1, self.n_ctx)
+            t.arange(0, self.n_ctx, dtype=t.long, device='cuda').reshape(1, self.n_ctx).contiguous()
 
         if z_conds is not None:
             z_cond = z_conds[0]
@@ -54,7 +54,7 @@ class DummyPrior:
         prime = z.shape[1]
         assert_shape(z, (n_samples, prime))
         start = z[:,-1:] + 1
-        z_rest = (t.arange(0, self.n_ctx - prime, dtype=t.long, device='cuda').view(1, self.n_ctx - prime) + start).view(n_samples, self.n_ctx - prime)
+        z_rest = (t.arange(0, self.n_ctx - prime, dtype=t.long, device='cuda').reshape(1, self.n_ctx - prime).contiguous() + start).reshape(n_samples, self.n_ctx - prime).contiguous()
         z = t.cat([z, z_rest], dim=1)
 
         if z_conds is not None:
@@ -83,21 +83,21 @@ def test_ancestral_sample(labels, priors, hps):
     for z in zs:
         total_length = z.shape[1]
         # Check sample
-        assert ((z - t.arange(0, total_length, dtype=t.long, device='cuda').view(1, total_length)) == 0).all()
+        assert ((z - t.arange(0, total_length, dtype=t.long, device='cuda').reshape(1, total_length).contiguous()) == 0).all()
 
     print("dummy ancestral sample passed")
 
 def test_primed_sample(labels, priors, hps):
     sample_levels = list(range(hps.levels))
 
-    start = t.tensor([15, 23, 11, 9], dtype=t.long, device='cuda').view(4, 1)
+    start = t.tensor([15, 23, 11, 9], dtype=t.long, device='cuda').reshape(4, 1).contiguous()
 
     zs_in = []
     zs = []
     for i in reversed(range(3)):
         n_ctx = 8192*(4**i)
         n_prime = n_ctx // 4
-        z_prime = t.arange(0, n_prime, dtype=t.long, device='cuda').view(1, n_prime) % (2*(4**i))
+        z_prime = t.arange(0, n_prime, dtype=t.long, device='cuda').reshape(1, n_prime).contiguous() % (2*(4**i))
         z_rest = t.randint(-10, -1, size=(1, n_ctx - n_prime), dtype=t.long, device='cuda')
         z_in = t.cat([z_prime, z_rest], dim=1) + (4**i)*start
         zs_in.append(z_in)
@@ -113,7 +113,7 @@ def test_primed_sample(labels, priors, hps):
         assert (z[:,:prime_length] == z_in[:,:prime_length]).all()
         # Check sample
         z_rest = z[:,prime_length-1:] - z[:,prime_length-1:prime_length]
-        assert ((z_rest - t.arange(0, total_length - prime_length + 1, dtype=t.long, device='cuda').view(1, total_length - prime_length + 1)) == 0).all()
+        assert ((z_rest - t.arange(0, total_length - prime_length + 1, dtype=t.long, device='cuda').reshape(1, total_length - prime_length + 1).contiguous()) == 0).all()
 
     print("dummy primed sample passed")
 
@@ -123,7 +123,7 @@ def check_sample():
     levels = 3
     priors = [DummyPrior(n_ctx, level, levels) for level in range(levels)]
     max_total_length, offset, sample_length = 4134368, 0, n_ctx*8*4*4
-    y = t.tensor([max_total_length, offset, sample_length, 10, 1, -1, -1, -1, -1], dtype=t.long, device='cuda').view(1, 9).repeat(n_samples, 1)
+    y = t.tensor([max_total_length, offset, sample_length, 10, 1, -1, -1, -1, -1], dtype=t.long, device='cuda').reshape(1, 9).contiguous().repeat(n_samples, 1)
     labels = [dict(y=y, info=[[]*n_samples]) for level in range(levels)]
     hps = Hyperparams({
         'levels': 3,

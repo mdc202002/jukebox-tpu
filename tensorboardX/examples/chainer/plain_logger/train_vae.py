@@ -127,8 +127,8 @@ for epoch in six.moves.range(1, n_epoch + 1):
             writer.add_scalar('test/rec_loss', model.rec_loss,
                               epoch * N_test + i)
             writer.add_image('reconstructed', model(
-                x).reshape(-1, 1, 28, 28), epoch * N_test + i)
-            writer.add_image('input', x.reshape(-1, 1, 28, 28),
+                x).reshape(-1, 1, 28, 28).contiguous(), epoch * N_test + i)
+            writer.add_image('input', x.reshape(-1, 1, 28, 28).contiguous(),
                              epoch * N_test + i)
             del model.loss
     print('test  mean loss={}, mean reconstruction loss={}'
@@ -148,7 +148,7 @@ model.to_cpu()
 def save_images(x, filename):
     fig, ax = plt.subplots(3, 3, figsize=(9, 9), dpi=100)
     for ai, xi in zip(ax.flatten(), x):
-        ai.imshow(xi.reshape(28, 28))
+        ai.imshow(xi.reshape(28, 28).contiguous())
     fig.savefig(filename)
 
 
