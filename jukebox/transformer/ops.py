@@ -30,11 +30,9 @@ def gelu(x):
 def swish(x):
     return x * t.sigmoid(x)
 
-#@t.jit.script
 def quick_gelu(x):
     return x * t.sigmoid(1.702 * x)
 
-#@t.jit.script
 def quick_gelu_bwd(x, grad_output):
     sig = t.sigmoid(1.702 * x)
     return grad_output * sig * (1.702 * x * (1 - sig) + 1.)
