@@ -52,11 +52,14 @@ class QuickGelu(t.autograd.Function):
 def memory_efficient_quick_gelu(x):
     return QuickGelu.apply(x)
 
+def tgelu(x):
+    return t.nn.functional.gelu(x)
+
 ACT_FNS = {
     'relu': t.nn.functional.relu,
     'swish': swish,
-    'gelu': gelu,
-    'quick_gelu': memory_efficient_quick_gelu #quick_gelu
+    'gelu': tgelu,
+    'quick_gelu': tgelu #quick_gelu
 }
 
 def _move_to_gpu_and_convert_conv_weights_to_fp16(l):
