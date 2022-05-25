@@ -305,9 +305,9 @@ class FactoredAttention(nn.Module):
         print(self.__hash__(), self.sample_t, x.shape, encoder_kv, sample)
         query, key, value, sample = self.qkv(self, x, encoder_kv=encoder_kv, sample=sample)
         if self.checkpoint_attn == 2 and not sample:
-            a = checkpoint(lambda q,k,v,s=sample: self.attn(q,k,v,s), (query, key, value), (), True)
+            a = checkpoint(lambda q,k,v,s=sample: self.attn(self, q,k,v,s), (query, key, value), (), True)
         else:
-            a = self.attn(query,key,value,sample)
+            a = self.attn(self, query,key,value,sample)
         if a.shape[1] != curr_ctx:
             offset = self._offset(curr_ctx)
             a = a[:,offset:offset + curr_ctx,:].contiguous()
