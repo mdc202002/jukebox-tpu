@@ -58,8 +58,8 @@ def tgelu(x):
 ACT_FNS = {
     'relu': t.nn.functional.relu,
     'swish': swish,
-    'gelu': tgelu,
-    'quick_gelu': tgelu #quick_gelu
+    'gelu': gelu,
+    'quick_gelu': memory_efficient_quick_gelu #quick_gelu
 }
 
 def _move_to_gpu_and_convert_conv_weights_to_fp16(l):
