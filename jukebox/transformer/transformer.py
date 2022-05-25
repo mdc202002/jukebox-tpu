@@ -167,8 +167,8 @@ class Transformer(nn.Module):
                 l.attn.w = None
 
     def forward(self, x, encoder_kv=None, sample=False, fp16=False, fp16_out=False):
-        if fp16:
-            x = x.half()
+        #if fp16:
+        #    x = x.half()
 
         # Blocks
         for i,l in enumerate(self._attn_mods):
@@ -187,8 +187,8 @@ class Transformer(nn.Module):
                     x = l(x, encoder_kv=None, sample=sample)
             if l.attn.record_attn:
                 self.ws.append(l.attn.w)
-        if not fp16_out:
-            x = x.float()
+        #if not fp16_out:
+        #    x = x.float()
         return x
 
     def check_cache(self, n_samples, sample_t, fp16):
