@@ -31,7 +31,7 @@ def get_alignment(x, zs, labels, prior, fp16, hps):
     alignment_hops = {}
     indices_hops = {}
 
-    prior.cuda()
+    prior.to('xla:1')
     empty_cache()
     for start in get_starts(total_length, n_ctx, hop_length):
         end = start + n_ctx

@@ -24,7 +24,7 @@ def _loss_fn(loss_fn, x_target, x_pred, hps):
     elif loss_fn == 'l2':
         return t.mean((x_pred - x_target) ** 2) / hps.bandwidth['l2']
     elif loss_fn == 'linf':
-        residual = ((x_pred - x_target) ** 2).reshape(x_target.shape[0], -1)
+        residual = ((x_pred - x_target) ** 2).reshape(x_target.shape[0], -1).contiguous()
         values, _ = t.topk(residual, hps.linf_k, dim=1)
         return t.mean(values) / hps.bandwidth['l2']
     elif loss_fn == 'lmix':
@@ -144,12 +144,11 @@ class VQVAE(nn.Module):
         return zs
 
     def sample(self, n_samples):
-        zs = [t.randint(0, self.l_bins, size=(n_samples, *z_shape), device='cuda') for z_shape in self.z_shapes]
+        zs = [t.randint(0, self.l_bins, size=(n_samples, *z_shape), device='xla:1') for z_shape in self.z_shapes]
         return self.decode(zs)
 
     def forward(self, x, hps, loss_fn='l1'):
         metrics = {}
-
         N = x.shape[0]
 
         # Encode/Decode

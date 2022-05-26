@@ -47,7 +47,7 @@ class SyncBatchnormFunction(Function):
         torch.cuda.nvtx.range_push("carilli field")
         c_last_grad = grad_output.transpose(1, -1).contiguous()
         # squash non-channel dimension so we can easily calculate mean
-        c_grad = c_last_grad.view(-1, num_features).contiguous()
+        c_grad = c_last_grad.reshape(-1, num_features).contiguous()
         torch.cuda.nvtx.range_pop()
 
         # calculate grad_input
@@ -56,7 +56,7 @@ class SyncBatchnormFunction(Function):
             #     - (h - mu) * (var + eps)**(-1.0) * np.mean(dy * (h - mu), axis=0))
             mean_dy = c_grad.mean(0)
             mean_dy_xmu = (c_last_grad * (c_last_input -
-                                          running_mean)).view(-1, num_features).mean(0)
+                                          running_mean)).reshape(-1, num_features).contiguous().mean(0)
             if torch.distributed.is_initialized():
                 torch.distributed.all_reduce(
                     mean_dy, ReduceOp.SUM, process_group)
@@ -75,7 +75,7 @@ class SyncBatchnormFunction(Function):
         if weight is not None and ctx.needs_input_grad[1]:
             # dgamma = np.sum((h - mu) * (var + eps)**(-1. / 2.) * dy, axis=0)
             grad_weight = ((c_last_input - running_mean) / torch.sqrt(
-                running_variance + eps) * c_last_grad).view(-1, num_features).sum(0)
+                running_variance + eps) * c_last_grad).reshape(-1, num_features).contiguous().sum(0)
 
         # calculate grad_bias
         grad_bias = None

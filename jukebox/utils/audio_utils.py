@@ -86,7 +86,7 @@ def spec(x, hps):
     return t.norm(stft(x, hps), p=2, dim=-1)
 
 def norm(x):
-    return (x.view(x.shape[0], -1) ** 2).sum(dim=-1).sqrt()
+    return (x.reshape(x.shape[0], -1).contiguous() ** 2).sum(dim=-1).sqrt()
 
 def squeeze(x):
     if len(x.shape) == 3:
@@ -135,7 +135,7 @@ def load_audio(file, sr, offset, duration, mono=False):
     # Librosa loads more filetypes than soundfile
     x, _ = librosa.load(file, sr=sr, mono=mono, offset=offset/sr, duration=duration/sr)
     if len(x.shape) == 1:
-        x = x.reshape((1, -1))
+        x = x.reshape((1, -1)).contiguous()
     return x    
 
 

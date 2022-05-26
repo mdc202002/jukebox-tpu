@@ -74,10 +74,10 @@ inp_t = type_tensor(inp)
 weight_t = type_tensor(weight)
 bias_t = type_tensor(bias)
 
-inp_r = ref_tensor(inp.transpose(1, 0, 2, 3).reshape(feature_size, -1))
+inp_r = ref_tensor(inp.transpose(1, 0, 2, 3).reshape(feature_size, -1).contiguous())
 inp2_r = ref_tensor(inp)
-weight_r = ref_tensor(weight).view(-1, 1, 1)
-bias_r = ref_tensor(bias).view(-1, 1, 1)
+weight_r = ref_tensor(weight).reshape(-1, 1, 1).contiguous()
+bias_r = ref_tensor(bias).reshape(-1, 1, 1).contiguous()
 
 grad_output_t = type_tensor(grad)
 
@@ -133,7 +133,7 @@ if args.local_rank == 0:
     sbn_result = compare("comparing biased variance: ", var_biased, b_v, error) and sbn_result
 
 out = syncbn.batchnorm_forward(inp_t, mean, inv_std, weight_t, bias_t)
-out_r = weight_r * (inp2_r - m.view(-1, 1, 1)) * torch.rsqrt(b_v.view(-1,1,1) + eps) + bias_r
+out_r = weight_r * (inp2_r - m.reshape(-1, 1, 1).contiguous()) * torch.rsqrt(b_v.reshape(-1,1,1).contiguous() + eps) + bias_r
 
 if args.local_rank == 0:
     sbn_result = compare("comparing output: ", out, out_r, error) and sbn_result
@@ -141,16 +141,16 @@ if args.local_rank == 0:
 
 grad_output_t = type_tensor(grad)
 
-grad_output_r = ref_tensor(grad.transpose(1, 0, 2, 3).reshape(feature_size, -1))
+grad_output_r = ref_tensor(grad.transpose(1, 0, 2, 3).reshape(feature_size, -1).contiguous())
 grad_output2_r = ref_tensor(grad)
 
 grad_bias_r = grad_output_r.sum(1)
-grad_weight_r = ((inp2_r - m.view(-1, 1, 1)) * torch.rsqrt(b_v.view(-1,1,1) + eps) * grad_output2_r).transpose(1,0).contiguous().view(feature_size, -1).sum(1)
+grad_weight_r = ((inp2_r - m.reshape(-1, 1, 1).contiguous()) * torch.rsqrt(b_v.reshape(-1,1,1).contiguous() + eps) * grad_output2_r).transpose(1,0).contiguous().reshape(feature_size, -1).contiguous().sum(1)
 
 mean_dy_r = grad_output_r.mean(1)
-mean_dy_xmu_r = ((inp2_r - m.view(-1, 1, 1)) * grad_output2_r).transpose(1,0).contiguous().view(feature_size, -1).mean(1)
+mean_dy_xmu_r = ((inp2_r - m.reshape(-1, 1, 1).contiguous()) * grad_output2_r).transpose(1,0).contiguous().reshape(feature_size, -1).contiguous().mean(1)
 
-grad_input_r = (grad_output2_r - mean_dy_r.view(-1, 1, 1) - (inp2_r - m.view(-1, 1, 1)) / (b_v.view(-1,1,1) + eps) * mean_dy_xmu_r.view(-1, 1, 1) ) * torch.rsqrt(b_v.view(-1,1,1) + eps) * weight_r.view(-1,1,1)
+grad_input_r = (grad_output2_r - mean_dy_r.reshape(-1, 1, 1).contiguous() - (inp2_r - m.reshape(-1, 1, 1).contiguous()) / (b_v.reshape(-1,1,1).contiguous() + eps) * mean_dy_xmu_r.reshape(-1, 1, 1).contiguous() ) * torch.rsqrt(b_v.reshape(-1,1,1).contiguous() + eps) * weight_r.reshape(-1,1,1).contiguous()
 
 mean_dy, mean_dy_xmu, grad_weight, grad_bias = syncbn.reduce_bn(grad_output_t, inp_t, mean, inv_std, weight_t)
 grad_input = syncbn.batchnorm_backward(grad_output_t, inp_t, mean, inv_std, weight_t, mean_dy, mean_dy_xmu)

@@ -7,10 +7,189 @@ import torch.nn.functional as F
 from jukebox.transformer.ops import Conv1D
 from jukebox.utils.checkpoint import checkpoint
 
+### extracted attn
+
+
+def dense_attn(self, query, key, value, sample):
+    query = self.split_heads(query)
+    key = self.split_heads(key, k=True)
+    value = self.split_heads(value)
+    if self.checkpoint_attn == 1 and not sample:
+        a = checkpoint(lambda q,k,v,s=sample: self._attn(q,k,v,s), (query, key, value),
+                   (), True)
+    else:
+        a = self._attn(query,key,value,sample)
+    a = self.merge_heads(a)
+    return a
+
+def block_attn(self, q, k, v, sample):
+    blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
+    bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
+    if sample:
+        assert l == self._suff_cache_len(), f"{l} != {self._suff_cache_len()}"
+        return dense_attn(self, q, k, v, sample).reshape(bs, 1, d).contiguous()
+    else:
+        ql = q.shape[1]
+        q = q.reshape(bs * ql // block_ctx, block_ctx, d).contiguous()
+        if ql < l:
+            l = ql
+            k = k[:, -l:].contiguous()
+            v = v[:, -l:].contiguous()
+        k = k.reshape(bs * l // block_ctx, block_ctx, d).contiguous()
+        v = v.reshape(bs * l // block_ctx, block_ctx, d).contiguous()
+        return dense_attn(self, q, k, v, sample).reshape(bs, l, d).contiguous()
+
+def transpose_block_attn(self, q, k, v, sample):
+    blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
+    bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
+    if sample:
+        block_l = (l - 1) % block_ctx
+        k = k[:,block_l::block_ctx,:]
+        v = v[:,block_l::block_ctx,:]
+        return dense_attn(self, q, k, v, sample).reshape(bs, 1, d).contiguous()
+    else:
+        ql = q.shape[1]
+        q = q.reshape(bs, ql // block_ctx, block_ctx, d).contiguous().transpose(1,2).contiguous().reshape(bs * block_ctx, ql // block_ctx, d).contiguous()
+        k = k.reshape(bs,  l // block_ctx, block_ctx, d).contiguous().transpose(1,2).contiguous().reshape(bs * block_ctx,  l // block_ctx, d).contiguous()
+        v = v.reshape(bs,  l // block_ctx, block_ctx, d).contiguous().transpose(1,2).contiguous().reshape(bs * block_ctx,  l // block_ctx, d).contiguous()
+        return dense_attn(self, q, k, v, sample).reshape(bs, block_ctx, ql // block_ctx, d).contiguous().transpose(1,2).contiguous().reshape(bs, ql, d).contiguous()
+
+def prev_block_attn(self, q, k, v, sample):
+    blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
+    bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
+    if sample:
+        assert l == self._suff_cache_len(), f"{l} != {self._suff_cache_len()}"
+        block = (l - 1) // block_ctx
+        prev_l = (block - 1) * block_ctx
+        if block > 0:
+            assert prev_l == 0
+            k = k[:, prev_l:prev_l + block_ctx, :]
+            v = v[:, prev_l:prev_l + block_ctx, :]
+        else:
+            k = t.zeros(bs, block_ctx, d, device=q.device, dtype=q.dtype)
+            v = t.zeros(bs, block_ctx, d, device=q.device, dtype=q.dtype)
+        return dense_attn(self, q, k, v, sample).reshape(bs, 1, d).contiguous()
+    else:
+        ql = q.shape[1]
+        q = q.reshape(bs * ql // block_ctx, block_ctx, d).contiguous()
+        k = t.nn.functional.pad(k.reshape(bs, l // block_ctx, block_ctx, d).contiguous()[:, :-1, :, :], (0,0,0,0,1,0)).reshape(bs * l // block_ctx, block_ctx, d).contiguous()
+        v = t.nn.functional.pad(v.reshape(bs, l // block_ctx, block_ctx, d).contiguous()[:, :-1, :, :], (0,0,0,0,1,0)).reshape(bs * l // block_ctx, block_ctx, d).contiguous()
+        if ql < l:
+            qb = ql // block_ctx
+            kb =  l // block_ctx
+            l = ql
+            k = k.reshape(bs, kb, block_ctx, d).contiguous()[:, -qb:].contiguous().reshape(bs * qb, block_ctx, d).contiguous()
+            v = v.reshape(bs, kb, block_ctx, d).contiguous()[:, -qb:].contiguous().reshape(bs * qb, block_ctx, d).contiguous()
+        return dense_attn(self, q, k, v, sample).reshape(bs, l, d).contiguous()
+
+def summary_attn(self, q, k, v, sample):
+    blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
+    bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
+    if sample:
+        k = t.nn.functional.pad(k[:, block_ctx-1:blocks*block_ctx-1:block_ctx, :],(0,0,1,0))
+        v = t.nn.functional.pad(v[:, block_ctx-1:blocks*block_ctx-1:block_ctx, :],(0,0,1,0))
+        return dense_attn(self, q, k, v, sample).reshape(bs, 1, d).contiguous()
+    else:
+        k = t.nn.functional.pad(k.reshape(bs, blocks, l // blocks, d).contiguous()[:, :-1, -1, :],(0,0,1,0)) # bs, blocks, d
+        v = t.nn.functional.pad(v.reshape(bs, blocks, l // blocks, d).contiguous()[:, :-1, -1, :],(0,0,1,0)) # bs, blocks, d
+        return dense_attn(self, q, k, v, sample).reshape(bs, l, d).contiguous()
+
+def summary_spread_attn(self, q, k, v, sample):
+    blocks, block_ctx, spread = self.blocks, self.block_ctx, self.spread # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
+    bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
+    if sample:
+        assert False, "Not yet implemented"
+        # k = t.nn.functional.pad(k,(0,0,block_ctx,(-l)%block_ctx)).reshape(bs, -1, block_ctx, d).contiguous()[:,:-1,-spread:,:].contiguous().reshape(bs, -1, d).contiguous()
+        # v = t.nn.functional.pad(v,(0,0,block_ctx,(-l)%block_ctx)).reshape(bs, -1, block_ctx, d).contiguous()[:,:-1,-spread:,:].contiguous().reshape(bs, -1, d).contiguous()
+        # return self.dense_attn(q, k, v, sample).reshape(bs, 1, d).contiguous()
+    else:
+        k = t.nn.functional.pad(k.reshape(bs, blocks, l // blocks, d).contiguous()[:, :-1, -spread:, :],(0,0,0,0,1,0)).contiguous().reshape(bs, blocks * spread, d).contiguous()  # bs, blocks * spread, d
+        v = t.nn.functional.pad(v.reshape(bs, blocks, l // blocks, d).contiguous()[:, :-1, -spread:, :],(0,0,0,0,1,0)).contiguous().reshape(bs, blocks * spread, d).contiguous()  # bs, blocks * spread, d
+        return dense_attn(self, q, k, v, sample).reshape(bs, l, d).contiguous()
+
+def prime_attn(self, q, k, v, sample):
+    prime_len = self._prime_len
+    k = k[:, :prime_len]
+    v = v[:, :prime_len]
+    return dense_attn(self, q, k, v, sample)
+
+def decode_attn(self, q, k, v, sample):
+    assert k.shape[1] == v.shape[1] == self.encoder_dims, f'k: {k.shape}, v: {v.shape}, enc_dims: {self.encoder_dims}'
+    return dense_attn(self, q, k, v, sample)
+
+
+### extracted qkv
+
+def factored_qkv(self, x, encoder_kv=None, sample=False):
+    curr_ctx = x.shape[1]
+    #print(curr_ctx)
+    assert encoder_kv is None
+    query, key, value = x.chunk(3, dim=2)
+    if sample:
+        self.sample_t += curr_ctx
+        #print('factored_qkv', self.sample_t, curr_ctx, self.__hash__())
+        key, value = self._append_cache(key, value)
+        l_cache = self._suff_cache_len()
+        if self._cache_len() > l_cache:
+            self._slice_cache(-l_cache)
+        if curr_ctx > 1:
+            if self.attn_func != 0:
+                query = self._pad_to_block_ctx(query, query=True)
+                key = self._pad_to_block_ctx(key)
+                value = self._pad_to_block_ctx(value)
+                assert key.shape[1] % self.block_ctx == 0
+                assert query.shape[1] % self.block_ctx == 0
+            assert key.shape[1] == value.shape[1]
+            assert query.shape[1] <= key.shape[1]
+            sample = False
+        else:
+            key = self.cache['key']
+            value = self.cache['value']
+    return query, key, value, sample
+
+def prime_qkv(self, x, encoder_kv=None, sample=False):
+    curr_ctx = x.shape[1]
+    #print(curr_ctx)
+    assert encoder_kv is None
+    query, key, value = x.chunk(3, dim=2)
+    if sample:
+        if self._cache_len() < self._prime_len:
+            self._append_cache(key, value)
+        if self._cache_len() > self._prime_len:
+            self._slice_cache(0, self._prime_len)
+        key, value = self.cache['key'], self.cache['value']
+        self.sample_t += curr_ctx
+        #print('prime_qkv', self.sample_t, curr_ctx, self.__hash__())
+        assert key.shape[1] == value.shape[1] == self._suff_cache_len(), f'k: {key.shape}, v: {value.shape}, prime_dims: {self._suff_cache_len()}'
+    else:
+        assert key.shape[1] == value.shape[1] == self.n_ctx, f'k: {key.shape}, v: {value.shape}, prime_dims: {self.n_ctx}'
+    assert key.shape[0] == value.shape[0] == query.shape[0], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
+    assert key.shape[2] == value.shape[2] == query.shape[2], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
+    return query, key, value, sample
+
+def decode_qkv(self, x, encoder_kv=None, sample=False):
+    curr_ctx = x.shape[1]
+    #print(curr_ctx)
+    assert encoder_kv is not None
+    query = x
+    if sample:
+        if self.sample_t == 0:
+            self.cache['key'], self.cache['value'] = self.c_enc_kv(encoder_kv.type_as(x)).chunk(2, dim=2)
+        key, value = self.cache['key'], self.cache['value']
+        self.sample_t += curr_ctx
+        #print('decode_qkv', self.sample_t, curr_ctx, self.__hash__())
+    else:
+        key, value = self.c_enc_kv(encoder_kv.type_as(x)).chunk(2, dim=2)
+    assert key.shape[0] == value.shape[0] == query.shape[0], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
+    assert key.shape[1] == value.shape[1] == self.encoder_dims, f'k: {key.shape}, v: {value.shape}, enc_dims: {self.encoder_dims}'
+    assert key.shape[2] == value.shape[2] == query.shape[2], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
+    return query, key, value, sample
+
+
 def repeat(x, n, dim):
     if dim == -1:
         dim = len(x.shape) - 1
-    return x.view(int(np.prod(x.shape[:dim+1])), 1, int(np.prod(x.shape[dim+1:]))).repeat(1,n,1).view(*x.shape[:dim], n * x.shape[dim], *x.shape[dim+1:])
+    return x.reshape(int(np.prod(x.shape[:dim+1])), 1, int(np.prod(x.shape[dim+1:]))).contiguous().repeat(1,n,1).reshape(*x.shape[:dim], n * x.shape[dim], *x.shape[dim+1:]).contiguous()
 
 def get_mask(mask, q_l, kv_l, blocks, spread, device, sample, sample_t):
     # returns a mask of shape 1 x 1 x q_l x kv_l or None if masking is not needed.
@@ -22,10 +201,10 @@ def get_mask(mask, q_l, kv_l, blocks, spread, device, sample, sample_t):
         mask = t.ones(q_l, kv_l, device=device).tril(offset)
     elif mask == 'summary':
         # Masked summary
-        mask = t.nn.functional.pad(t.ones(q_l, q_l, device=device).tril().view(q_l, blocks, q_l // blocks)[:,:-1,-kv_l//blocks:],(0,0,1,0),value=1).contiguous().view(q_l, kv_l)
+        mask = t.nn.functional.pad(t.ones(q_l, q_l, device=device).tril().reshape(q_l, blocks, q_l // blocks).contiguous()[:,:-1,-kv_l//blocks:],(0,0,1,0),value=1).contiguous().reshape(q_l, kv_l).contiguous()
     elif mask == 'prime':
         mask = t.ones(q_l, kv_l, device=device).tril(offset)
-    return mask.view(1,1,q_l,kv_l)
+    return mask.reshape(1,1,q_l,kv_l).contiguous()
 
 class FactoredAttention(nn.Module):
     def __init__(self, n_in, n_ctx, n_state, n_head,
@@ -55,14 +234,14 @@ class FactoredAttention(nn.Module):
         # Sequence of length l is factored as [blocks, l // blocks]
         self.attn_func = attn_func
         self.qkv, self.attn, self.attn_mask = {
-            0: (self.factored_qkv, self.dense_attn, 'autoregressive'),              # Attend to all positions
-            1: (self.factored_qkv, self.block_attn, 'autoregressive'),              # Attend to your block
-            2: (self.factored_qkv, self.transpose_block_attn, 'autoregressive'),    # Attend to transpose block
-            3: (self.factored_qkv, self.prev_block_attn, None),                     # Attend to previous block
-            4: (self.factored_qkv, self.summary_attn, 'summary'),                   # Attend to last position of each block
-            5: (self.factored_qkv, self.summary_spread_attn, 'summary'),
-            6: (self.decode_qkv, self.decode_attn, None),
-            7: (self.prime_qkv, self.prime_attn, 'prime')
+            0: (factored_qkv, dense_attn, 'autoregressive'),              # Attend to all positions
+            1: (factored_qkv, block_attn, 'autoregressive'),              # Attend to your block
+            2: (factored_qkv, transpose_block_attn, 'autoregressive'),    # Attend to transpose block
+            3: (factored_qkv, prev_block_attn, None),                     # Attend to previous block
+            4: (factored_qkv, summary_attn, 'summary'),                   # Attend to last position of each block
+            5: (factored_qkv, summary_spread_attn, 'summary'),
+            6: (decode_qkv, decode_attn, None),
+            7: (prime_qkv, prime_attn, 'prime')
         }[attn_func] # Attend to last k position of each block
 
         self.blocks = blocks
@@ -110,190 +289,25 @@ class FactoredAttention(nn.Module):
     def merge_heads(self, x):
         x = x.permute(0, 2, 1, 3).contiguous()
         new_x_shape = (*x.size()[:-2], x.size(-2) * x.size(-1))
-        return x.view(*new_x_shape)  # in Tensorflow implem: fct merge_states
+        return x.reshape(*new_x_shape).contiguous()  # in Tensorflow implem: fct merge_states
 
     def split_heads(self, x, k=False):
         new_x_shape = (*x.size()[:-1], self.n_head, x.size(-1) // self.n_head)
-        x = x.view(*new_x_shape)  # in Tensorflow implem: fct split_states
+        x = x.reshape(*new_x_shape).contiguous()  # in Tensorflow implem: fct split_states
         if k:
             return x.permute(0, 2, 3, 1)
         else:
             return x.permute(0, 2, 1, 3)
 
-    def dense_attn(self, query, key, value, sample):
-        query = self.split_heads(query)
-        key = self.split_heads(key, k=True)
-        value = self.split_heads(value)
-        if self.checkpoint_attn == 1 and not sample:
-            a = checkpoint(lambda q,k,v,s=sample: self._attn(q,k,v,s), (query, key, value),
-                       (), True)
-        else:
-            a = self._attn(query,key,value,sample)
-        a = self.merge_heads(a)
-        return a
-
-    def block_attn(self, q, k, v, sample):
-        blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
-        bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
-        if sample:
-            assert l == self._suff_cache_len(), f"{l} != {self._suff_cache_len()}"
-            return self.dense_attn(q, k, v, sample).view(bs, 1, d)
-        else:
-            ql = q.shape[1]
-            q = q.view(bs * ql // block_ctx, block_ctx, d)
-            if ql < l:
-                l = ql
-                k = k[:, -l:].contiguous()
-                v = v[:, -l:].contiguous()
-            k = k.view(bs * l // block_ctx, block_ctx, d)
-            v = v.view(bs * l // block_ctx, block_ctx, d)
-            return self.dense_attn(q, k, v, sample).view(bs, l, d)
-
-    def transpose_block_attn(self, q, k, v, sample):
-        blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
-        bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
-        if sample:
-            block_l = (l - 1) % block_ctx
-            k = k[:,block_l::block_ctx,:]
-            v = v[:,block_l::block_ctx,:]
-            return self.dense_attn(q, k, v, sample).view(bs, 1, d)
-        else:
-            ql = q.shape[1]
-            q = q.view(bs, ql // block_ctx, block_ctx, d).transpose(1,2).contiguous().view(bs * block_ctx, ql // block_ctx, d)
-            k = k.view(bs,  l // block_ctx, block_ctx, d).transpose(1,2).contiguous().view(bs * block_ctx,  l // block_ctx, d)
-            v = v.view(bs,  l // block_ctx, block_ctx, d).transpose(1,2).contiguous().view(bs * block_ctx,  l // block_ctx, d)
-            return self.dense_attn(q, k, v, sample).view(bs, block_ctx, ql // block_ctx, d).transpose(1,2).contiguous().view(bs, ql, d)
-
-    def prev_block_attn(self, q, k, v, sample):
-        blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
-        bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
-        if sample:
-            assert l == self._suff_cache_len(), f"{l} != {self._suff_cache_len()}"
-            block = (l - 1) // block_ctx
-            prev_l = (block - 1) * block_ctx
-            if block > 0:
-                assert prev_l == 0
-                k = k[:, prev_l:prev_l + block_ctx, :]
-                v = v[:, prev_l:prev_l + block_ctx, :]
-            else:
-                k = t.zeros(bs, block_ctx, d, device=q.device, dtype=q.dtype)
-                v = t.zeros(bs, block_ctx, d, device=q.device, dtype=q.dtype)
-            return self.dense_attn(q, k, v, sample).view(bs, 1, d)
-        else:
-            ql = q.shape[1]
-            q = q.view(bs * ql // block_ctx, block_ctx, d)
-            k = t.nn.functional.pad(k.view(bs, l // block_ctx, block_ctx, d)[:, :-1, :, :], (0,0,0,0,1,0)).view(bs * l // block_ctx, block_ctx, d)
-            v = t.nn.functional.pad(v.view(bs, l // block_ctx, block_ctx, d)[:, :-1, :, :], (0,0,0,0,1,0)).view(bs * l // block_ctx, block_ctx, d)
-            if ql < l:
-                qb = ql // block_ctx
-                kb =  l // block_ctx
-                l = ql
-                k = k.view(bs, kb, block_ctx, d)[:, -qb:].contiguous().view(bs * qb, block_ctx, d)
-                v = v.view(bs, kb, block_ctx, d)[:, -qb:].contiguous().view(bs * qb, block_ctx, d)
-            return self.dense_attn(q, k, v, sample).view(bs, l, d)
-
-    def summary_attn(self, q, k, v, sample):
-        blocks, block_ctx = self.blocks, self.block_ctx # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
-        bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
-        if sample:
-            k = t.nn.functional.pad(k[:, block_ctx-1:blocks*block_ctx-1:block_ctx, :],(0,0,1,0))
-            v = t.nn.functional.pad(v[:, block_ctx-1:blocks*block_ctx-1:block_ctx, :],(0,0,1,0))
-            return self.dense_attn(q, k, v, sample).view(bs, 1, d)
-        else:
-            k = t.nn.functional.pad(k.view(bs, blocks, l // blocks, d)[:, :-1, -1, :],(0,0,1,0)) # bs, blocks, d
-            v = t.nn.functional.pad(v.view(bs, blocks, l // blocks, d)[:, :-1, -1, :],(0,0,1,0)) # bs, blocks, d
-            return self.dense_attn(q, k, v, sample).view(bs, l, d)
-
-    def summary_spread_attn(self, q, k, v, sample):
-        blocks, block_ctx, spread = self.blocks, self.block_ctx, self.spread # block_ctx is l // blocks for complete l ie l = n_ctx. Sampling has less l
-        bs, l, d = v.shape # For sample, q_l = 1, k_l = v_l = sample_t
-        if sample:
-            assert False, "Not yet implemented"
-            # k = t.nn.functional.pad(k,(0,0,block_ctx,(-l)%block_ctx)).view(bs, -1, block_ctx, d)[:,:-1,-spread:,:].contiguous().view(bs, -1, d)
-            # v = t.nn.functional.pad(v,(0,0,block_ctx,(-l)%block_ctx)).view(bs, -1, block_ctx, d)[:,:-1,-spread:,:].contiguous().view(bs, -1, d)
-            # return self.dense_attn(q, k, v, sample).view(bs, 1, d)
-        else:
-            k = t.nn.functional.pad(k.view(bs, blocks, l // blocks, d)[:, :-1, -spread:, :],(0,0,0,0,1,0)).contiguous().view(bs, blocks * spread, d)  # bs, blocks * spread, d
-            v = t.nn.functional.pad(v.view(bs, blocks, l // blocks, d)[:, :-1, -spread:, :],(0,0,0,0,1,0)).contiguous().view(bs, blocks * spread, d)  # bs, blocks * spread, d
-            return self.dense_attn(q, k, v, sample).view(bs, l, d)
-
-    def prime_attn(self, q, k, v, sample):
-        prime_len = self._prime_len
-        k = k[:, :prime_len]
-        v = v[:, :prime_len]
-        return self.dense_attn(q, k, v, sample)
-
-    def decode_attn(self, q, k, v, sample):
-        assert k.shape[1] == v.shape[1] == self.encoder_dims, f'k: {k.shape}, v: {v.shape}, enc_dims: {self.encoder_dims}'
-        return self.dense_attn(q, k, v, sample)
-
-    def factored_qkv(self, x, encoder_kv=None, sample=False):
-        curr_ctx = x.shape[1]
-        assert encoder_kv is None
-        query, key, value = x.chunk(3, dim=2)
-        if sample:
-            self.sample_t += curr_ctx
-            key, value = self._append_cache(key, value)
-            l_cache = self._suff_cache_len()
-            if self._cache_len() > l_cache:
-                self._slice_cache(-l_cache)
-            if curr_ctx > 1:
-                if self.attn_func != 0:
-                    query = self._pad_to_block_ctx(query, query=True)
-                    key = self._pad_to_block_ctx(key)
-                    value = self._pad_to_block_ctx(value)
-                    assert key.shape[1] % self.block_ctx == 0
-                    assert query.shape[1] % self.block_ctx == 0
-                assert key.shape[1] == value.shape[1]
-                assert query.shape[1] <= key.shape[1]
-                sample = False
-            else:
-                key = self.cache['key']
-                value = self.cache['value']
-        return query, key, value, sample
-
-    def prime_qkv(self, x, encoder_kv=None, sample=False):
-        curr_ctx = x.shape[1]
-        assert encoder_kv is None
-        query, key, value = x.chunk(3, dim=2)
-        if sample:
-            if self._cache_len() < self._prime_len:
-                self._append_cache(key, value)
-            if self._cache_len() > self._prime_len:
-                self._slice_cache(0, self._prime_len)
-            key, value = self.cache['key'], self.cache['value']
-            self.sample_t += curr_ctx
-            assert key.shape[1] == value.shape[1] == self._suff_cache_len(), f'k: {key.shape}, v: {value.shape}, prime_dims: {self._suff_cache_len()}'
-        else:
-            assert key.shape[1] == value.shape[1] == self.n_ctx, f'k: {key.shape}, v: {value.shape}, prime_dims: {self.n_ctx}'
-        assert key.shape[0] == value.shape[0] == query.shape[0], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
-        assert key.shape[2] == value.shape[2] == query.shape[2], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
-        return query, key, value, sample
-
-    def decode_qkv(self, x, encoder_kv=None, sample=False):
-        curr_ctx = x.shape[1]
-        assert encoder_kv is not None
-        query = x
-        if sample:
-            if self.sample_t == 0:
-                self.cache['key'], self.cache['value'] = self.c_enc_kv(encoder_kv.type_as(x)).chunk(2, dim=2)
-            key, value = self.cache['key'], self.cache['value']
-            self.sample_t += curr_ctx
-        else:
-            key, value = self.c_enc_kv(encoder_kv.type_as(x)).chunk(2, dim=2)
-        assert key.shape[0] == value.shape[0] == query.shape[0], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
-        assert key.shape[1] == value.shape[1] == self.encoder_dims, f'k: {key.shape}, v: {value.shape}, enc_dims: {self.encoder_dims}'
-        assert key.shape[2] == value.shape[2] == query.shape[2], f'k: {key.shape}, v: {value.shape}, q: {query.shape}'
-        return query, key, value, sample
-
     def forward(self, x, encoder_kv=None, sample=False):
         curr_ctx = x.shape[1]
         x = self.c_attn(x)
-        query, key, value, sample = self.qkv(x, encoder_kv=encoder_kv, sample=sample)
+        print(self.__hash__(), self.sample_t, x.shape, encoder_kv, sample)
+        query, key, value, sample = self.qkv(self, x, encoder_kv=encoder_kv, sample=sample)
         if self.checkpoint_attn == 2 and not sample:
-            a = checkpoint(lambda q,k,v,s=sample: self.attn(q,k,v,s), (query, key, value), (), True)
+            a = checkpoint(lambda q,k,v,s=sample: self.attn(self, q,k,v,s), (query, key, value), (), True)
         else:
-            a = self.attn(query,key,value,sample)
+            a = self.attn(self, query,key,value,sample)
         if a.shape[1] != curr_ctx:
             offset = self._offset(curr_ctx)
             a = a[:,offset:offset + curr_ctx,:].contiguous()
@@ -384,7 +398,7 @@ class FactoredAttention(nn.Module):
         blocks = self.blocks or 1
         spread = self.spread or 1
         bs, l, d = (4, self.n_ctx, self.n_in)
-        x = t.randn(bs, l, d).cuda()
+        x = t.randn(bs, l, d).to('xla:1')
         x.requires_grad = True
         x_out = self.forward(x) # bs, l, d
         loss = x_out.mean(dim = -1) # bs, l
@@ -395,7 +409,7 @@ class FactoredAttention(nn.Module):
         assert (grad[:2] == 0).all()
         assert (grad[3:] == 0).all()
         assert (grad[2, (pos + 1):] == 0).all()
-        pos_grad = (t.sum(grad[2] ** 2, dim=-1) > 0).nonzero().view(-1).cpu()
+        pos_grad = (t.sum(grad[2] ** 2, dim=-1) > 0).nonzero().reshape(-1).contiguous().cpu()
 
         block_pos = pos - (pos % (l // blocks))
         exp_pos_grad = {0: t.arange(pos),
@@ -403,18 +417,19 @@ class FactoredAttention(nn.Module):
                         2: t.arange(pos % (l // blocks), pos, l // blocks),
                         3: t.arange(block_pos - l // blocks, block_pos),
                         4: t.arange(l // blocks - 1, pos, l // blocks),
-                        5: ((t.arange(pos) % (l // blocks) >= (l // blocks - spread)) & (t.arange(pos) < block_pos)).nonzero().view(-1)}[self.attn_func]
+                        5: ((t.arange(pos) % (l // blocks) >= (l // blocks - spread)) & (t.arange(pos) < block_pos)).nonzero().reshape(-1).contiguous()}[self.attn_func]
         exp_pos_grad = t.cat([exp_pos_grad, t.tensor([pos])], dim=-1)
 
         assert (len(pos_grad) == len(exp_pos_grad)) and (pos_grad == exp_pos_grad).all(), \
             f"Expected pos grad {exp_pos_grad} got {pos_grad} for attn_func {self.attn_func} pos {pos} l {l} blocks {blocks}"
 
     def check_cache(self, n_samples, sample_t, fp16):
+        print(self.__hash__())
         assert self.sample_t == sample_t, f"{self.sample_t} != {sample_t}"
         if sample_t == 0:
             assert self.cache == {}
         else:
-            dtype = {True: t.float16, False: t.float32}[fp16]
+            dtype = {True: t.float16, False: t.float32}[False]
             l_cache = self._suff_cache_len()
             assert self.cache['key'].shape == (n_samples, l_cache, self.n_state)
             assert self.cache['value'].shape == (n_samples, l_cache, self.n_state)
@@ -425,7 +440,7 @@ class FactoredAttention(nn.Module):
         t.manual_seed(42)
         bs, l, d = (4, self.n_ctx, self.n_in)
         prime = 5
-        x = t.randn(bs, l, d).cuda()
+        x = t.randn(bs, l, d).to('xla:1')
         xs = t.chunk(x, l, dim=1)
         assert self.sample_t == 0
         assert self.cache == {}
@@ -434,7 +449,7 @@ class FactoredAttention(nn.Module):
             enc_l = self.encoder_dims
             encoder_kv = None
             if self.attn_func == 6:
-                encoder_kv = t.randn(bs, enc_l, d).cuda()
+                encoder_kv = t.randn(bs, enc_l, d).to('xla:1')
 
             # Normal path
             x_out_normal = self.forward(x, encoder_kv=encoder_kv)
@@ -462,9 +477,9 @@ class FactoredAttention(nn.Module):
         n_chunks = l // chunk_size
         with t.no_grad():
             encoder_kv = None
-            x = t.randn(bs, l, d).cuda()
+            x = t.randn(bs, l, d).to('xla:1')
             if self.attn_func == 6:
-                encoder_kv = t.randn(bs, enc_l, d).cuda()
+                encoder_kv = t.randn(bs, enc_l, d).to('xla:1')
 
             self.del_cache()
             y_forw = self.forward(x, encoder_kv=encoder_kv, sample=False)

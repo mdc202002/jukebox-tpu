@@ -10,11 +10,11 @@ from jukebox.utils.checkpoint import checkpoint
 
 def _convert_mlp_traced(l):
     if isinstance(l, ResAttnBlock):
-        l.mlp = t.jit.trace(l.mlp, t.randn(1, 1, l.n_in).cuda())
+        l.mlp = t.jit.trace(l.mlp, t.randn(1, 1, l.n_in).to('xla:1'))
 
 def _convert_mlp_traced_fp16(l):
     if isinstance(l, ResAttnBlock):
-        l.mlp = t.jit.trace(l.mlp, t.randn(1, 1, l.n_in).cuda().half())
+        l.mlp = t.jit.trace(l.mlp, t.randn(1, 1, l.n_in).to('xla:1').half())
 
 class MLP(nn.Module):
     def __init__(self, n_in, n_state, resid_dropout=0.0, afn='quick_gelu', zero_out=False, init_scale=1.0):
@@ -167,8 +167,8 @@ class Transformer(nn.Module):
                 l.attn.w = None
 
     def forward(self, x, encoder_kv=None, sample=False, fp16=False, fp16_out=False):
-        if fp16:
-            x = x.half()
+        #if fp16:
+        #    x = x.half()
 
         # Blocks
         for i,l in enumerate(self._attn_mods):
@@ -187,8 +187,8 @@ class Transformer(nn.Module):
                     x = l(x, encoder_kv=None, sample=sample)
             if l.attn.record_attn:
                 self.ws.append(l.attn.w)
-        if not fp16_out:
-            x = x.float()
+        #if not fp16_out:
+        #    x = x.float()
         return x
 
     def check_cache(self, n_samples, sample_t, fp16):
@@ -203,8 +203,8 @@ class Transformer(nn.Module):
         bs, l, s, d = (4, self.n_ctx, self.encoder_dims, self.n_in)
         prime = 5
         with t.no_grad():
-            encoder_kv = t.randn(bs, s, d).cuda()
-            x = t.randn(bs, l, d).cuda()
+            encoder_kv = t.randn(bs, s, d).to('xla:1')
+            x = t.randn(bs, l, d).to('xla:1')
             y_forw = self.forward(x, encoder_kv=encoder_kv, sample=True)
 
             self.del_cache()
@@ -233,7 +233,7 @@ if __name__ == '__main__':
     blocks = 16
     for attn_order in [0,2,6]:
         encoder_dims = {0: 0, 2: 0, 6: 64}[attn_order]
-        prior = Transformer(n_in, n_ctx, n_head, n_depth, mask=True, attn_order=attn_order, encoder_dims=encoder_dims, blocks=blocks).cuda()
+        prior = Transformer(n_in, n_ctx, n_head, n_depth, mask=True, attn_order=attn_order, encoder_dims=encoder_dims, blocks=blocks).to('xla:1')
         prior.training = False
         prior.check_sample()
         print(f"Checked attn_order: {attn_order}")

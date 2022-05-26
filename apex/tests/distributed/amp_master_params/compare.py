@@ -17,9 +17,9 @@ for model_rank0, model_rank1, master_rank0, master_rank1 in zip(
     assert torch.allclose(model_rank0, model_rank1), "Model param mismatch"
     assert torch.allclose(master_rank0, master_rank1), "Master param mismatch"
     # Some debugging/investigation assistance code:
-    # maxval, maxind = torch.max(((torch.abs(model_rank0).float())/torch.abs(master_rank0)).view(-1), 0)
-    # offending_val_half = model_rank0.view(-1)[maxind.item()]
-    # offending_val_float = master_rank0.view(-1)[maxind.item()]
+    # maxval, maxind = torch.max(((torch.abs(model_rank0).float())/torch.abs(master_rank0)).reshape(-1).contiguous(), 0)
+    # offending_val_half = model_rank0.reshape(-1).contiguous()[maxind.item()]
+    # offending_val_float = master_rank0.reshape(-1).contiguous()[maxind.item()]
     # print(maxval.item(), maxind.item(), offending_val_half.item(), offending_val_float.item(),
     #       offending_val_float.half().item())
     # rtol needs to be > 2^-11 because of denormals...

@@ -77,7 +77,7 @@ class Beholder(object):
         smd = SummaryMetadata()
         tensor = TensorProto(
             dtype='DT_FLOAT',
-            float_val=frame.reshape(-1).tolist(),
+            float_val=frame.reshape(-1).contiguous().tolist(),
             tensor_shape=TensorShapeProto(
                 dim=[TensorShapeProto.Dim(size=frame.shape[0]),
                      TensorShapeProto.Dim(size=frame.shape[1]),
