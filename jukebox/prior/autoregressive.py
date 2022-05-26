@@ -306,7 +306,7 @@ class ConditionalAutoregressive2D(nn.Module):
                 del conds_prime
                 if not get_preds:
                     del cond_prime
-                x_prime = self.transformer(x_prime, encoder_kv=encoder_kv, sample=True, fp16=fp16)
+                x_prime = self.transformer(x_prime, encoder_kv=encoder_kv, sample=True, fp16=False)
 
                 if get_preds:
                     if self.add_cond_after_transformer:
